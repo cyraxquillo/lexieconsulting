@@ -397,6 +397,7 @@ def employees(request):
         search = request.query_params.get("search")
         department = request.query_params.get("department")
         status_filter = request.query_params.get("status")
+        role_filter = request.query_params.get("role")
         if search:
             queryset = queryset.filter(
                 Q(name__icontains=search.strip())
@@ -405,6 +406,26 @@ def employees(request):
             )
         if department:
             queryset = queryset.filter(department__name__iexact=department.strip())
+        if role_filter:
+            normalized_role = role_filter.strip().lower().replace("-", "_").replace(" ", "_")
+            normalized_role = {
+                "employee": Employee.Role.staff,
+                "hr_manager": Employee.Role.management,
+            }.get(normalized_role, normalized_role)
+            if normalized_role not in Employee.Role.values:
+                return Response(
+                    {"detail": "role must be Admin, Management, Team Leader, or Staff"},
+                    status=422,
+                )
+            aliases = {
+                Employee.Role.management: (User.Role.hr_manager,),
+                Employee.Role.staff: (User.Role.employee,),
+            }.get(normalized_role, ())
+            queryset = queryset.filter(
+                Q(role=normalized_role)
+                | Q(user__role=normalized_role)
+                | Q(user__role__in=aliases)
+            )
         if status_filter in {"active", "inactive"}:
             queryset = queryset.filter(status=status_filter)
         skip, limit, error = parse_pagination(request)
@@ -415,7 +436,10 @@ def employees(request):
         return Response(EmployeeSerializer(queryset.order_by("name")[skip:skip + limit], many=True).data)
     if not is_management(user):
         return role_denied()
-    serializer = EmployeeSerializer(data=request.data)
+    serializer = EmployeeSerializer(
+        data=request.data,
+        context={"request": request},
+    )
     if not serializer.is_valid():
         return Response(serializer.errors, status=422)
     try:
@@ -459,7 +483,12 @@ def employee_detail(request, employee_id):
         data.pop("user_id", None)
         data.pop("team_leader_id", None)
         data.pop("department", None)
-    serializer = EmployeeSerializer(employee, data=data, partial=True)
+    serializer = EmployeeSerializer(
+        employee,
+        data=data,
+        partial=True,
+        context={"request": request},
+    )
     if not serializer.is_valid():
         return Response(serializer.errors, status=422)
     try:

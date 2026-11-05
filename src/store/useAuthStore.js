@@ -1,8 +1,9 @@
 import { create } from 'zustand'
 import { getMe, login as requestLogin } from '../services/authService'
 import { AUTH_TOKEN_KEY } from '../services/api'
+import { normalizeUser } from './roles'
 
-export const roleHome = (role) => `/${role}/${role === 'team_leader' ? 'team' : ['management', 'hr_manager'].includes(role) ? 'attendance' : 'overview'}`
+export { normalizeRole, normalizeUser, roleHome } from './roles'
 
 export const useAuthStore = create((set, get) => ({
   user: null,
@@ -11,7 +12,7 @@ export const useAuthStore = create((set, get) => ({
   isInitializing: false,
   isLoggingIn: false,
   loginError: '',
-  setUser: (user) => set({ user }),
+  setUser: (user) => set({ user: normalizeUser(user) }),
   initialize: async () => {
     if (get().initialized || get().isInitializing) return
     set({ isInitializing: true })
@@ -22,7 +23,7 @@ export const useAuthStore = create((set, get) => ({
     }
     set({ token })
     try {
-      const user = await getMe()
+      const user = normalizeUser(await getMe())
       if (get().token === token) set({ user, initialized: true, isInitializing: false })
     } catch {
       localStorage.removeItem(AUTH_TOKEN_KEY)
@@ -34,8 +35,8 @@ export const useAuthStore = create((set, get) => ({
     try {
       const tokenResponse = await requestLogin(email, password)
       localStorage.setItem(AUTH_TOKEN_KEY, tokenResponse.access_token)
-      set({ token: tokenResponse.access_token, user: { email, role: tokenResponse.role } })
-      const user = await getMe()
+      set({ token: tokenResponse.access_token, user: normalizeUser({ email, role: tokenResponse.role }) })
+      const user = normalizeUser(await getMe())
       set({ user, initialized: true })
       return user
     } catch (error) {

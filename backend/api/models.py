@@ -133,7 +133,13 @@ class Employee(models.Model):
         blank=True,
         on_delete=models.SET_NULL,
         related_name="employee",
-        limit_choices_to={"role__in": [User.Role.staff, User.Role.employee]},
+        limit_choices_to={
+            "role__in": [
+                User.Role.staff,
+                User.Role.employee,
+                User.Role.team_leader,
+            ]
+        },
     )
     team_leader = models.ForeignKey(
         User,
@@ -144,6 +150,17 @@ class Employee(models.Model):
         limit_choices_to={"role": User.Role.team_leader},
     )
     name = models.CharField(max_length=160, db_index=True)
+    class Role(models.TextChoices):
+        admin = "admin", "Admin"
+        management = "management", "Management"
+        team_leader = "team_leader", "Team Leader"
+        staff = "staff", "Staff"
+
+    role = models.CharField(
+        max_length=16,
+        choices=Role.choices,
+        default=Role.staff,
+    )
     department = models.ForeignKey(
         Department,
         on_delete=models.PROTECT,

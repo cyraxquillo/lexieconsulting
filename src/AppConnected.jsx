@@ -22,11 +22,11 @@ import {
 } from './FeaturePages'
 import { getEvaluationCriteria as fetchEvaluationCriteria, submitHybridReview } from './services/featureService'
 import StatusBadge from './components/StatusBadge'
-import { roleHome, useAuthStore } from './store/useAuthStore'
+import { normalizeRole, roleHome, useAuthStore } from './store/useAuthStore'
 import './settings.css'
 
 const cn = (...classes) => classes.filter(Boolean).join(' ')
-const roleLabels = { admin: 'Admin / IT Manager', management: 'Management', hr_manager: 'Management', team_leader: 'Team Leader', staff: 'Staff / Employee', employee: 'Staff / Employee', client: 'Client portal' }
+const roleLabels = { admin: 'Admin', management: 'Management', team_leader: 'Team Leader', staff: 'Staff', client: 'Client' }
 const employeeRoleGroups = { management: 'management', hr_manager: 'management', team_leader: 'team_leader', staff: 'staff', employee: 'staff' }
 const managementRoles = ['admin', 'management', 'hr_manager']
 const staffRoles = ['staff', 'employee']
@@ -44,10 +44,10 @@ function employeeRoleLabel(role) {
   if (group === 'management') return 'Management'
   if (group === 'team_leader') return 'Team Leader'
   if (group === 'staff') return 'Staff'
-  if (group === 'admin') return roleLabels.admin
+  if (group === 'admin') return 'Admin'
   return role || 'Staff'
 }
-const rolePath = (role, path = 'overview') => `/${role}/${path}`
+const rolePath = (role, path = 'overview') => `/${normalizeRole(role)}/${path}`
 const trainedDepartments = ['Recruitment', 'Client Services', 'HR & Admin', 'Finance', 'IT Support']
 
 function useApiResource(loader, dependencies = []) {
@@ -92,7 +92,7 @@ function presentEmployee(employee, evaluations, predictions) {
   const evaluation = latestBy(evaluations, 'employee_id', employee.id)
   const prediction = latestBy(predictions, 'employee_id', employee.id)
   const score = averageEvaluation(evaluation)
-  const role = employee.role || employee.position
+  const role = employee.role || 'staff'
   return {
     ...employee,
     role,
@@ -216,7 +216,7 @@ function StaffDashboard() {
   const latestEvaluation = latestBy(data.evaluations, 'employee_id', employee.id)
   const prediction = latestBy(data.predictions, 'employee_id', employee.id)
   const trend = [...data.evaluations].sort((a, b) => new Date(a.date) - new Date(b.date)).map((item) => ({ month: formatDate(item.date, { month: 'short' }), score: averageEvaluation(item) }))
-  return <><div className="welcome-row"><div><p className="eyebrow">YOUR PERFORMANCE HUB</p><h2>Welcome, {user.name}</h2><p className="muted">Your latest performance signals and feedback.</p></div><button className="secondary-button" onClick={() => downloadData('my-performance-summary.json', { employee, latestEvaluation, prediction })}><Download size={16} /> Download summary</button></div><div className="staff-highlight"><div><p className="eyebrow">PREDICTED OUTLOOK</p><h3>{prediction?.predicted_category || 'No prediction yet'}</h3><p>{prediction ? `Latest prediction from ${formatDate(prediction.created_at)}.` : 'An administrator can run a prediction after an evaluation is recorded.'}</p></div><div className="confidence"><strong>{prediction ? `${(prediction.confidence_score * 100).toFixed(2)}%` : '—'}</strong><span>confidence</span></div><div className="ring"><span>{employee.score}</span><small>score</small></div></div><div className="stats-grid three"><StatCard label="Current score" value={`${employee.score} / 100`} detail="Latest evaluation" icon={BarChart3} /><StatCard label="Latest evaluation" value={formatDate(latestEvaluation?.date, { month: 'short', day: 'numeric' })} detail={latestEvaluation ? `Evaluator #${latestEvaluation.evaluator_id}` : 'No evaluation yet'} tone="blue" icon={ClipboardCheck} onClick={() => navigate('/staff/evaluations')} /><StatCard label="Attendance" value={`${employee.attendance_rate}%`} detail="Recorded attendance rate" tone="purple" icon={CheckCircle2} /></div><div className="dashboard-grid"><div className="panel chart-panel"><SectionHeader title="Your performance trend" action={<span className="subtle-label">Evaluation history</span>} /><div className="chart-wrap tall"><ResponsiveContainer width="100%" height="100%"><LineChart data={trend} margin={{ top: 12, right: 8, left: -22, bottom: 0 }}><CartesianGrid vertical={false} stroke="#e6edf0" /><XAxis dataKey="month" axisLine={false} tickLine={false} /><YAxis domain={[0, 100]} axisLine={false} tickLine={false} /><Tooltip /><Line type="monotone" dataKey="score" stroke="#0e8f88" strokeWidth={3} /></LineChart></ResponsiveContainer></div></div><div className="panel evaluation-card"><SectionHeader title="Latest evaluation" action={<NavLink className="text-button" to="/staff/evaluations">View history <ArrowUpRight size={14} /></NavLink>} /><div className="evaluation-score"><strong>{employee.score}</strong><span>/100</span><StatusBadge status={employee.status} /></div><p>{latestEvaluation?.comments || 'No comments were included in the latest evaluation.'}</p></div></div></>
+  return <><div className="welcome-row"><div><p className="eyebrow">YOUR PERFORMANCE HUB</p><h2>Welcome, {user.name}</h2><p className="muted">Your latest performance signals and feedback.</p></div><button className="secondary-button" onClick={() => downloadData('my-performance-summary.json', { employee, latestEvaluation, prediction })}><Download size={16} /> Download summary</button></div><div className="staff-highlight"><div><p className="eyebrow">PREDICTED OUTLOOK</p><h3>{prediction?.predicted_category || 'No prediction yet'}</h3><p>{prediction ? `Latest prediction from ${formatDate(prediction.created_at)}.` : 'An administrator can run a prediction after an evaluation is recorded.'}</p></div><div className="confidence"><strong>{prediction ? `${(prediction.confidence_score * 100).toFixed(2)}%` : '—'}</strong><span>confidence</span></div><div className="ring"><span>{employee.score}</span><small>score</small></div></div><div className="stats-grid three"><StatCard label="Current score" value={`${employee.score} / 100`} detail="Latest evaluation" icon={BarChart3} /><StatCard label="Latest evaluation" value={formatDate(latestEvaluation?.date, { month: 'short', day: 'numeric' })} detail={latestEvaluation ? `Evaluator #${latestEvaluation.evaluator_id}` : 'No evaluation yet'} tone="blue" icon={ClipboardCheck} onClick={() => navigate(rolePath(user.role, 'evaluations'))} /><StatCard label="Attendance" value={`${employee.attendance_rate}%`} detail="Recorded attendance rate" tone="purple" icon={CheckCircle2} /></div><div className="dashboard-grid"><div className="panel chart-panel"><SectionHeader title="Your performance trend" action={<span className="subtle-label">Evaluation history</span>} /><div className="chart-wrap tall"><ResponsiveContainer width="100%" height="100%"><LineChart data={trend} margin={{ top: 12, right: 8, left: -22, bottom: 0 }}><CartesianGrid vertical={false} stroke="#e6edf0" /><XAxis dataKey="month" axisLine={false} tickLine={false} /><YAxis domain={[0, 100]} axisLine={false} tickLine={false} /><Tooltip /><Line type="monotone" dataKey="score" stroke="#0e8f88" strokeWidth={3} /></LineChart></ResponsiveContainer></div></div><div className="panel evaluation-card"><SectionHeader title="Latest evaluation" action={<NavLink className="text-button" to={rolePath(user.role, 'evaluations')}>View history <ArrowUpRight size={14} /></NavLink>} /><div className="evaluation-score"><strong>{employee.score}</strong><span>/100</span><StatusBadge status={employee.status} /></div><p>{latestEvaluation?.comments || 'No comments were included in the latest evaluation.'}</p></div></div></>
 }
 
 function ClientDashboard() {
@@ -228,6 +228,7 @@ function ClientDashboard() {
 }
 
 function Employees() {
+  const user = useAuthStore((state) => state.user)
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState('name')
@@ -242,10 +243,19 @@ function Employees() {
   }, [searchInput])
   const resource = useApiResource(async () => {
     const params = { search: search || undefined }
-    const [employees, evaluations, predictions] = await Promise.all([getEmployees(params), getEvaluations(), getPredictions()])
-    return employees.map((employee) => presentEmployee(employee, evaluations, predictions))
+    const [employees, evaluations, predictions, accounts] = await Promise.all([
+      getEmployees(params),
+      getEvaluations(),
+      getPredictions(),
+      getUserAccounts(),
+    ])
+    return {
+      employees: employees.map((employee) => presentEmployee(employee, evaluations, predictions)),
+      teamLeaders: accounts.filter((account) => account.role === 'team_leader' && account.is_active),
+    }
   }, [search])
-  const filteredRows = (resource.data || []).filter((employee) => role === 'all' || employeeRoleGroup(employee.role) === role)
+  const employees = resource.data?.employees || []
+  const filteredRows = employees.filter((employee) => role === 'all' || employeeRoleGroup(employee.role) === role)
   const rows = [...filteredRows].sort((a, b) => sort === 'score' ? b.score - a.score : a.name.localeCompare(b.name))
   const submit = async (payload) => {
     setSaving(true)
@@ -261,7 +271,8 @@ function Employees() {
       setSaving(false)
     }
   }
-  return <><div className="page-heading"><div><p className="eyebrow">PEOPLE DIRECTORY</p><h2>Employees</h2><p className="muted">Track performance health across your organization.</p></div><button className="primary-button" onClick={() => setModal(true)}><Plus size={17} /> Add employee</button></div>{message && <div className="inline-feedback" role="status">{message}</div>}<div className="panel table-panel"><div className="table-toolbar"><div className="search-field"><Search size={17} /><input placeholder="Search employees" value={searchInput} onChange={(event) => setSearchInput(event.target.value)} /></div><select className="secondary-button" value={sort} onChange={(event) => setSort(event.target.value)}><option value="name">Sort: name</option><option value="score">Sort: score</option></select><select className="secondary-button" value={role} onChange={(event) => setRole(event.target.value)}><option value="all">All roles</option><option value="management">Management</option><option value="team_leader">Team Leader</option><option value="staff">Staff</option></select></div><QueryState loading={resource.loading} error={resource.error} onRetry={resource.retry} empty={Boolean(resource.data && rows.length === 0)} emptyMessage="Try another search or role filter."><div className="table-scroll"><table><thead><tr><th>Employee</th><th>Role</th><th>Performance score</th><th>Prediction</th><th>Last evaluation</th><th /></tr></thead><tbody>{rows.map((employee) => <EmployeeRow key={employee.id} employee={employee} />)}</tbody></table></div></QueryState></div>{modal && <Modal title="Add employee" onClose={() => setModal(false)}><EmployeeForm onCancel={() => setModal(false)} onSubmit={submit} loading={saving} error={saveError} /></Modal>}</>
+  const roleOptions = accountRoleOptions[user.role] || []
+  return <><div className="page-heading"><div><p className="eyebrow">PEOPLE DIRECTORY</p><h2>Employees</h2><p className="muted">Track performance health across your organization.</p></div><button className="primary-button" onClick={() => setModal(true)}><Plus size={17} /> Add employee</button></div>{message && <div className="inline-feedback" role="status">{message}</div>}<div className="panel table-panel"><div className="table-toolbar"><div className="search-field"><Search size={17} /><input placeholder="Search employees" value={searchInput} onChange={(event) => setSearchInput(event.target.value)} /></div><select className="secondary-button" value={sort} onChange={(event) => setSort(event.target.value)}><option value="name">Sort: name</option><option value="score">Sort: score</option></select><select className="secondary-button" value={role} onChange={(event) => setRole(event.target.value)}><option value="all">All roles</option><option value="management">Management</option><option value="team_leader">Team Leader</option><option value="staff">Staff</option></select></div><QueryState loading={resource.loading} error={resource.error} onRetry={resource.retry} empty={Boolean(resource.data && rows.length === 0)} emptyMessage="Try another search or role filter."><div className="table-scroll"><table><thead><tr><th>Employee</th><th>Role</th><th>Performance score</th><th>Prediction</th><th>Last evaluation</th><th /></tr></thead><tbody>{rows.map((employee) => <EmployeeRow key={employee.id} employee={employee} />)}</tbody></table></div></QueryState></div>{modal && <Modal title="Add employee" onClose={() => setModal(false)}><EmployeeForm roleOptions={roleOptions} teamLeaders={resource.data?.teamLeaders || []} onCancel={() => setModal(false)} onSubmit={submit} loading={saving} error={saveError} /></Modal>}</>
 }
 
 function EmployeeRow({ employee }) {
@@ -334,13 +345,32 @@ function UserAccountForm({ roleOptions, onCancel, onSubmit, loading, error }) {
   return <form className="modal-form" onSubmit={(event) => { event.preventDefault(); onSubmit(values) }}><label>Full name<input required maxLength="160" value={values.name} onChange={(event) => update('name', event.target.value)} /></label><label>Email<input type="email" required value={values.email} onChange={(event) => update('email', event.target.value)} /></label><label>Password<input type="password" autoComplete="new-password" minLength="8" required value={values.password} onChange={(event) => update('password', event.target.value)} /></label><label>Role<select value={values.role} onChange={(event) => update('role', event.target.value)}>{roleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>{error && <p className="form-error" role="alert">{error}</p>}<div className="form-actions"><button type="button" className="secondary-button" onClick={onCancel}>Cancel</button><button type="submit" className="primary-button" disabled={loading}>{loading ? 'Creating...' : 'Create account'}</button></div></form>
 }
 
-function EmployeeForm({ onCancel, onSubmit, loading = false, error = '', initial = {} }) {
-  const [values, setValues] = useState({ name: initial.name || '', position: initial.position || '', department: initial.department || 'Recruitment' })
+function EmployeeForm({
+  onCancel,
+  onSubmit,
+  loading = false,
+  error = '',
+  initial = {},
+  roleOptions = [],
+  teamLeaders = [],
+  canEditRole = true,
+  canEditTeamLeader = true,
+}) {
+  const [values, setValues] = useState({
+    name: initial.name || '',
+    role: initial.role || roleOptions.find(([value]) => value === 'staff')?.[0] || roleOptions[0]?.[0] || 'staff',
+    team_leader_id: initial.team_leader_id ? String(initial.team_leader_id) : '',
+    department: initial.department || 'Recruitment',
+  })
   const update = (key, value) => setValues((current) => ({ ...current, [key]: value }))
   const submit = (event) => {
     event.preventDefault()
     onSubmit({
       ...values,
+      role: values.role,
+      team_leader_id: values.role === 'staff' && values.team_leader_id
+        ? Number(values.team_leader_id)
+        : null,
       date_hired: initial.date_hired || new Date().toISOString().slice(0, 10),
       status: initial.status || 'active',
       attendance_rate: initial.attendance_rate ?? 100,
@@ -348,7 +378,8 @@ function EmployeeForm({ onCancel, onSubmit, loading = false, error = '', initial
       training_hours: initial.training_hours ?? 0,
     })
   }
-  return <form className="modal-form" onSubmit={submit}><label>Full name<input required value={values.name} onChange={(event) => update('name', event.target.value)} placeholder="e.g. Jordan Lee" /></label><label>Position<input required value={values.position} onChange={(event) => update('position', event.target.value)} placeholder="e.g. Staffing Consultant" /></label><label>Department<select value={values.department} onChange={(event) => update('department', event.target.value)}>{trainedDepartments.map((item) => <option key={item}>{item}</option>)}</select></label>{error && <p className="form-error" role="alert">{error}</p>}<div className="form-actions"><button type="button" className="secondary-button" onClick={onCancel}>Cancel</button><button type="submit" className="primary-button" disabled={loading}>{loading ? 'Saving...' : 'Create employee'}</button></div></form>
+  const editing = Boolean(initial.id)
+  return <form className="modal-form" onSubmit={submit}><label>Full name<input required value={values.name} onChange={(event) => update('name', event.target.value)} placeholder="e.g. Jordan Lee" /></label><label>Role<select required disabled={!canEditRole} value={values.role} onChange={(event) => update('role', event.target.value)}>{roleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>{values.role === 'staff' && <label>Team Leader<select required disabled={!canEditTeamLeader} value={values.team_leader_id} onChange={(event) => update('team_leader_id', event.target.value)}><option value="">Select a Team Leader</option>{teamLeaders.map((leader) => <option key={leader.id} value={leader.id}>{leader.name}</option>)}</select></label>}<label>Department<select value={values.department} onChange={(event) => update('department', event.target.value)}>{trainedDepartments.map((item) => <option key={item}>{item}</option>)}</select></label>{error && <p className="form-error" role="alert">{error}</p>}<div className="form-actions"><button type="button" className="secondary-button" onClick={onCancel}>Cancel</button><button type="submit" className="primary-button" disabled={loading}>{loading ? 'Saving...' : editing ? 'Save changes' : 'Create employee'}</button></div></form>
 }
 
 function EmployeeProfile() {
@@ -361,11 +392,29 @@ function EmployeeProfile() {
   const [saveError, setSaveError] = useState('')
   const resource = useApiResource(async () => {
     const employee = await getEmployee(id)
-    const [evaluations, predictions] = await Promise.all([getEvaluations(employee.id), getPredictions(employee.id)])
-    return { employee: presentEmployee(employee, evaluations, predictions), evaluations, predictions }
+    const [evaluations, predictions, accounts] = await Promise.all([
+      getEvaluations(employee.id),
+      getPredictions(employee.id),
+      managementRoles.includes(user.role) ? getUserAccounts() : Promise.resolve([]),
+    ])
+    const teamLeaders = managementRoles.includes(user.role)
+      ? accounts.filter((account) => account.role === 'team_leader' && account.is_active)
+      : user.role === 'team_leader'
+        ? [{ id: user.id, name: user.name }]
+        : []
+    return {
+      employee: presentEmployee(employee, evaluations, predictions),
+      evaluations,
+      predictions,
+      teamLeaders,
+    }
   }, [id])
   if (resource.loading || resource.error) return <QueryState loading={resource.loading} error={resource.error} onRetry={resource.retry} />
   if (!resource.data) return <QueryState loading error="Loading employee data..." onRetry={resource.retry} />
+  const canEditRole = managementRoles.includes(user.role)
+  const roleOptions = canEditRole
+    ? accountRoleOptions[user.role] || []
+    : [[resource.data.employee.role, employeeRoleLabel(resource.data.employee.role)]]
   const submitUpdate = async (changes) => {
     setSaving(true)
     setSaveError('')
@@ -379,7 +428,7 @@ function EmployeeProfile() {
       setSaving(false)
     }
   }
-  return <QueryState loading={resource.loading} error={resource.error} onRetry={resource.retry}><><NavLink to={rolePath(user.role, user.role === 'team_leader' ? 'team' : 'employees')} className="back-link">← Back to employees</NavLink><div className="profile-heading"><div className="profile-person"><span className="avatar xl">{resource.data.employee.avatar}</span><div><p className="eyebrow">{resource.data.employee.employee_code}</p><h2>{resource.data.employee.name}</h2><p>{resource.data.employee.position} · {resource.data.employee.department}</p></div></div><div className="profile-actions">{canEdit && <button className="secondary-button" onClick={() => setEditing(true)}><Settings size={16} /> Edit profile</button>}{canEvaluate && <NavLink to={rolePath(user.role, 'evaluations')} className="primary-button"><Plus size={16} /> New evaluation</NavLink>}</div></div><div className="stats-grid three"><StatCard label="Performance score" value={`${resource.data.employee.score} / 100`} detail="Latest evaluation" icon={BarChart3} /><StatCard label="Predicted category" value={resource.data.employee.status} detail="Latest available prediction" tone="blue" icon={Sparkles} /><StatCard label="Last evaluation" value={formatDate(resource.data.employee.latestEvaluation?.date)} detail={resource.data.latestEvaluation ? `Evaluator #${resource.data.latestEvaluation.evaluator_id}` : 'No evaluation'} tone="purple" icon={ClipboardCheck} /></div><div className="dashboard-grid"><div className="panel evaluation-card"><SectionHeader title="Performance overview" action={<StatusBadge status={resource.data.employee.status} />} /><div className="evaluation-score"><strong>{resource.data.employee.score}</strong><span>/100</span></div><p>{resource.data.employee.latestEvaluation?.comments || 'No comments were included in the latest evaluation.'}</p></div><div className="panel prediction-panel"><SectionHeader title="Prediction history" action={<NavLink className="text-button" to={rolePath(user.role, 'predictions')}>Open predictions <ArrowUpRight size={14} /></NavLink>} /><p className="muted">{resource.data.predictions[0]?.predicted_category || 'No prediction has been run yet.'}</p></div></div>{editing && <Modal title="Edit employee" onClose={() => setEditing(false)}><EmployeeForm initial={resource.data.employee} onCancel={() => setEditing(false)} onSubmit={submitUpdate} loading={saving} error={saveError} /></Modal>}</></QueryState>
+  return <QueryState loading={resource.loading} error={resource.error} onRetry={resource.retry}><><NavLink to={rolePath(user.role, user.role === 'team_leader' ? 'team' : 'employees')} className="back-link">← Back to employees</NavLink><div className="profile-heading"><div className="profile-person"><span className="avatar xl">{resource.data.employee.avatar}</span><div><p className="eyebrow">{resource.data.employee.employee_code}</p><h2>{resource.data.employee.name}</h2><p>{resource.data.employee.position} · {resource.data.employee.department}</p></div></div><div className="profile-actions">{canEdit && <button className="secondary-button" onClick={() => setEditing(true)}><Settings size={16} /> Edit profile</button>}{canEvaluate && <NavLink to={rolePath(user.role, 'evaluations')} className="primary-button"><Plus size={16} /> New evaluation</NavLink>}</div></div><div className="stats-grid three"><StatCard label="Performance score" value={`${resource.data.employee.score} / 100`} detail="Latest evaluation" icon={BarChart3} /><StatCard label="Predicted category" value={resource.data.employee.status} detail="Latest available prediction" tone="blue" icon={Sparkles} /><StatCard label="Last evaluation" value={formatDate(resource.data.employee.latestEvaluation?.date)} detail={resource.data.latestEvaluation ? `Evaluator #${resource.data.latestEvaluation.evaluator_id}` : 'No evaluation'} tone="purple" icon={ClipboardCheck} /></div><div className="dashboard-grid"><div className="panel evaluation-card"><SectionHeader title="Performance overview" action={<StatusBadge status={resource.data.employee.status} />} /><div className="evaluation-score"><strong>{resource.data.employee.score}</strong><span>/100</span></div><p>{resource.data.employee.latestEvaluation?.comments || 'No comments were included in the latest evaluation.'}</p></div><div className="panel prediction-panel"><SectionHeader title="Prediction history" action={<NavLink className="text-button" to={rolePath(user.role, 'predictions')}>Open predictions <ArrowUpRight size={14} /></NavLink>} /><p className="muted">{resource.data.predictions[0]?.predicted_category || 'No prediction has been run yet.'}</p></div></div>{editing && <Modal title="Edit employee" onClose={() => setEditing(false)}><EmployeeForm initial={resource.data.employee} roleOptions={roleOptions} teamLeaders={resource.data.teamLeaders} canEditRole={canEditRole} canEditTeamLeader={managementRoles.includes(user.role)} onCancel={() => setEditing(false)} onSubmit={submitUpdate} loading={saving} error={saveError} /></Modal>}</></QueryState>
 }
 
 function Evaluations() {
@@ -625,6 +674,15 @@ function RequireAuth({ children, roles }) {
   return children
 }
 
+function LegacyRoleRedirect() {
+  const user = useAuthStore((state) => state.user)
+  const location = useLocation()
+  if (!user) return <Navigate to="/login" replace />
+  const legacyRole = location.pathname.startsWith('/hr_manager') ? 'hr_manager' : 'employee'
+  const suffix = location.pathname.slice(`/${legacyRole}`.length) || '/overview'
+  return <Navigate to={`/${normalizeRole(legacyRole)}${suffix}`} replace />
+}
+
 function RoleRoutes({ role }) {
   const attendanceRoles = ['admin', 'management', 'hr_manager', 'team_leader', 'staff', 'employee']
   const isManager = managementRoles.includes(role)
@@ -638,7 +696,7 @@ function AppConnected() {
   const initialize = useAuthStore((state) => state.initialize)
   useEffect(() => { void initialize() }, [initialize])
   if (!initialized) return <div className="login-page"><div className="login-panel"><div className="login-card" role="status">Restoring your session...</div></div></div>
-  return <Routes><Route path="/login" element={user ? <Navigate to={roleHome(user.role)} replace /> : <Login />} /><Route path="/admin/*" element={<RoleRoutes role="admin" />} /><Route path="/management/*" element={<RoleRoutes role="management" />} /><Route path="/hr_manager/*" element={<RoleRoutes role="hr_manager" />} /><Route path="/team_leader/*" element={<RoleRoutes role="team_leader" />} /><Route path="/staff/*" element={<RoleRoutes role="staff" />} /><Route path="/employee/*" element={<RoleRoutes role="employee" />} /><Route path="/client/*" element={<RoleRoutes role="client" />} /><Route path="*" element={<Navigate to={user ? roleHome(user.role) : '/login'} replace />} /></Routes>
+  return <Routes><Route path="/login" element={user ? <Navigate to={roleHome(user.role)} replace /> : <Login />} /><Route path="/admin/*" element={<RoleRoutes role="admin" />} /><Route path="/management/*" element={<RoleRoutes role="management" />} /><Route path="/hr_manager/*" element={<LegacyRoleRedirect />} /><Route path="/team_leader/*" element={<RoleRoutes role="team_leader" />} /><Route path="/staff/*" element={<RoleRoutes role="staff" />} /><Route path="/employee/*" element={<LegacyRoleRedirect />} /><Route path="/client/*" element={<RoleRoutes role="client" />} /><Route path="*" element={<Navigate to={user ? roleHome(user.role) : '/login'} replace />} /></Routes>
 }
 
 export default AppConnected

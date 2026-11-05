@@ -564,6 +564,65 @@ class AttendanceApiTests(APITestCase):
             response = self.client.get("/api/attendance/roster")
         self.assertEqual(response.data[0]["status"], "Late")
 
+    def test_management_roster_and_corrections_include_staff_but_team_leader_scope_stays_assigned(self):
+        other_staff = User.objects.create_user(
+            email="other-api-staff@attendance.test",
+            password="AnotherStaffPassword123!",
+            name="Other API Staff",
+            role=User.Role.staff,
+        )
+        other_employee = Employee.objects.create(
+            employee_code="API-ATT-002",
+            user=other_staff,
+            name=other_staff.name,
+            department=self.department,
+            position="Analyst",
+            date_hired=date(2026, 1, 1),
+        )
+        other_record = AttendanceRecord.objects.create(
+            employee=other_employee,
+            user=other_staff,
+            work_date=self.work_date,
+            status=AttendanceRecord.Status.present,
+        )
+        correction = AttendanceCorrectionRequest.objects.create(
+            record=other_record,
+            requested_by=other_staff,
+            reason="Correct my attendance status.",
+            requested_status=AttendanceRecord.Status.excused,
+            change_status=True,
+        )
+        server_time = timezone.make_aware(
+            datetime.combine(self.work_date, time(9, 0)),
+            timezone.get_current_timezone(),
+        )
+
+        self.client.force_authenticate(self.management)
+        with patch("api.attendance_api.timezone.now", return_value=server_time):
+            roster = self.client.get("/api/attendance/roster")
+        self.assertEqual(roster.status_code, 200)
+        self.assertIn(other_staff.pk, {row["user_id"] for row in roster.data})
+        requests = self.client.get("/api/attendance/corrections")
+        self.assertEqual(requests.status_code, 200)
+        self.assertIn(correction.pk, {row["id"] for row in requests.data})
+        review = self.client.patch(
+            f"/api/attendance/corrections/{correction.pk}",
+            {"status": "approved"},
+            format="json",
+        )
+        self.assertEqual(review.status_code, 200)
+        correction.refresh_from_db()
+        self.assertEqual(correction.status, AttendanceCorrectionRequest.Status.approved)
+
+        self.client.force_authenticate(self.team_leader)
+        with patch("api.attendance_api.timezone.now", return_value=server_time):
+            leader_roster = self.client.get("/api/attendance/roster")
+        self.assertEqual(leader_roster.status_code, 200)
+        self.assertEqual(
+            {row["user_id"] for row in leader_roster.data},
+            {self.employee_user.pk},
+        )
+
     def test_employee_requests_correction_and_assigned_leader_approves_with_audit(self):
         self.client.force_authenticate(self.employee_user)
         requested_time = timezone.make_aware(

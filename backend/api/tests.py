@@ -13,7 +13,7 @@ from django.test import TestCase, override_settings
 from PIL import Image
 from rest_framework.test import APITestCase
 
-from api.forms import AutomationSettingsForm
+from api.forms import AccountCreateForm, AutomationSettingsForm
 from api.ml.predict import (
     MODEL_SOURCE,
     MODEL_VERSION,
@@ -228,6 +228,8 @@ class BackendApiTests(APITestCase):
         )
         self.assertEqual(role_updated.status_code, 200)
         self.assertEqual(role_updated.data["role"], User.Role.staff)
+        linked_employee = Employee.objects.get(user_id=leader_account_id)
+        self.assertEqual(linked_employee.role, Employee.Role.staff)
 
         rejected = self.client.post("/api/accounts", {
             "name": "New Manager",
@@ -271,6 +273,175 @@ class BackendApiTests(APITestCase):
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.data["role"], User.Role.team_leader)
         self.assertFalse(updated.data["is_active"])
+
+    def test_staff_and_team_leader_accounts_create_linked_employee_records(self):
+        self.authenticate(self.admin)
+        created_accounts = {}
+        for role in (User.Role.staff, User.Role.team_leader):
+            with self.subTest(role=role):
+                response = self.client.post(
+                    "/api/accounts",
+                    {
+                        "name": f"{role} Linked User",
+                        "email": f"{role}@linked.test",
+                        "password": "LinkedAccountPassword123!",
+                        "role": role,
+                    },
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 201)
+                user = User.objects.get(pk=response.data["id"])
+                employee = Employee.objects.get(user=user)
+                self.assertEqual(employee.name, user.name)
+                self.assertEqual(employee.role, role)
+                created_accounts[role] = employee
+
+        self.assertNotEqual(
+            created_accounts[User.Role.staff].pk,
+            created_accounts[User.Role.team_leader].pk,
+        )
+
+    def test_staff_registration_also_creates_a_linked_employee_record(self):
+        self.authenticate(self.admin)
+        response = self.client.post(
+            "/api/auth/register",
+            {
+                "name": "Registered Staff",
+                "email": "registered-staff@linked.test",
+                "password": "LinkedAccountPassword123!",
+                "role": User.Role.staff,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        user = User.objects.get(pk=response.data["id"])
+        self.assertEqual(Employee.objects.get(user=user).role, Employee.Role.staff)
+
+    def test_django_account_form_auto_links_staff_and_team_leader(self):
+        for role in (User.Role.staff, User.Role.team_leader):
+            with self.subTest(role=role):
+                form = AccountCreateForm(
+                    data={
+                        "name": f"Django {role}",
+                        "email": f"django-{role}@linked.test",
+                        "role": role,
+                        "password1": "DjangoAccountPassword123!",
+                        "password2": "DjangoAccountPassword123!",
+                    },
+                    actor=self.admin,
+                )
+                self.assertTrue(form.is_valid(), form.errors)
+                user = form.save()
+                employee = Employee.objects.get(user=user)
+                self.assertEqual(employee.role, role)
+                self.assertEqual(employee.name, user.name)
+
+    def test_employee_role_filter_returns_canonical_account_roles(self):
+        self.authenticate(self.admin)
+        response = self.client.get("/api/employees?role=Staff")
+        self.assertEqual(response.status_code, 200)
+        employee = next(row for row in response.data if row["id"] == self.employee.pk)
+        self.assertEqual(employee["role"], User.Role.staff)
+        self.assertNotIn(
+            self.employee.pk,
+            {row["id"] for row in self.client.get("/api/employees?role=Management").data},
+        )
+        self.assertEqual(self.client.get("/api/employees?role=unknown").status_code, 422)
+
+    def test_employee_role_update_keeps_linked_account_role_in_sync(self):
+        self.authenticate(self.admin)
+        response = self.client.put(
+            f"/api/employees/{self.employee.pk}",
+            {
+                "name": self.employee.name,
+                "role": Employee.Role.management,
+                "department": self.department.name,
+                "position": self.employee.position,
+                "date_hired": self.employee.date_hired.isoformat(),
+                "status": self.employee.status,
+                "team_leader_id": None,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.employee.refresh_from_db()
+        self.employee_user.refresh_from_db()
+        self.assertEqual(response.data["role"], Employee.Role.management)
+        self.assertEqual(self.employee.role, Employee.Role.management)
+        self.assertEqual(self.employee_user.role, User.Role.management)
+
+    def test_team_leader_sees_only_staff_assigned_to_them(self):
+        self.authenticate(self.admin)
+        leader_response = self.client.post(
+            "/api/accounts",
+            {
+                "name": "Assigned Team Leader",
+                "email": "assigned-leader@linked.test",
+                "password": "LinkedAccountPassword123!",
+                "role": User.Role.team_leader,
+            },
+            format="json",
+        )
+        other_leader_response = self.client.post(
+            "/api/accounts",
+            {
+                "name": "Other Team Leader",
+                "email": "other-leader@linked.test",
+                "password": "LinkedAccountPassword123!",
+                "role": User.Role.team_leader,
+            },
+            format="json",
+        )
+        staff_response = self.client.post(
+            "/api/accounts",
+            {
+                "name": "Assigned Staff",
+                "email": "assigned-staff@linked.test",
+                "password": "LinkedAccountPassword123!",
+                "role": User.Role.staff,
+            },
+            format="json",
+        )
+        other_staff_response = self.client.post(
+            "/api/accounts",
+            {
+                "name": "Other Staff",
+                "email": "other-staff@linked.test",
+                "password": "LinkedAccountPassword123!",
+                "role": User.Role.staff,
+            },
+            format="json",
+        )
+        self.assertEqual(leader_response.status_code, 201)
+        self.assertEqual(other_leader_response.status_code, 201)
+        self.assertEqual(staff_response.status_code, 201)
+        self.assertEqual(other_staff_response.status_code, 201)
+        leader = User.objects.get(pk=leader_response.data["id"])
+        assigned_employee = Employee.objects.get(user_id=staff_response.data["id"])
+        other_employee = Employee.objects.get(user_id=other_staff_response.data["id"])
+
+        assignment = self.client.put(
+            f"/api/employees/{assigned_employee.pk}",
+            {
+                "name": assigned_employee.name,
+                "role": Employee.Role.staff,
+                "department": assigned_employee.department.name,
+                "position": assigned_employee.position,
+                "date_hired": assigned_employee.date_hired.isoformat(),
+                "status": assigned_employee.status,
+                "tenure_months": assigned_employee.tenure_months,
+                "team_leader_id": leader.pk,
+            },
+            format="json",
+        )
+        self.assertEqual(assignment.status_code, 200)
+
+        self.authenticate(leader)
+        response = self.client.get("/api/employees")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["id"] for row in response.data], [assigned_employee.pk])
+        self.assertEqual(response.data[0]["role"], User.Role.staff)
+        self.assertNotIn(other_employee.pk, {row["id"] for row in response.data})
 
     def test_admin_can_manage_each_assignable_account_role(self):
         self.authenticate(self.admin)
@@ -709,15 +880,22 @@ class WebViewTests(TestCase):
         form = add_response.context["form"]
         self.assertEqual(
             set(form.fields),
-            {"user", "team_leader", "name", "department", "position", "date_hired"},
+            {"user", "team_leader", "name", "role", "department", "date_hired"},
+        )
+        team_leader = User.objects.create_user(
+            email="form-team-leader@lexie.ph",
+            password="FormTeamLeader123!",
+            name="Form Team Leader",
+            role=User.Role.team_leader,
         )
 
         employee_response = self.client.post(
             "/employees/add/",
             {
                 "name": "Created Employee",
+                "role": Employee.Role.staff,
                 "department": department.pk,
-                "position": "Coordinator",
+                "team_leader": team_leader.pk,
                 "date_hired": "2025-02-01",
             },
         )
@@ -725,6 +903,8 @@ class WebViewTests(TestCase):
         employee = Employee.objects.get(name="Created Employee")
         self.assertTrue(employee.employee_code.startswith("EMP-"))
         self.assertEqual(employee.department, department)
+        self.assertEqual(employee.role, Employee.Role.staff)
+        self.assertEqual(employee.team_leader, team_leader)
         self.assertEqual(employee.status, Employee.Status.active)
         self.assertIsNone(employee.attendance_rate)
         self.assertIsNone(employee.training_hours)

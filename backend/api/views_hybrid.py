@@ -168,7 +168,7 @@ def attendance_list(request):
         roster_users = (
             User.objects.filter(role__in=ATTENDANCE_ROLES)
             if request.user.role == User.Role.admin
-            else get_managed_users(request.user)
+            else attendance_visible_users(request.user).exclude(pk=request.user.pk)
         )
         today_records = {
             record.account.pk: record

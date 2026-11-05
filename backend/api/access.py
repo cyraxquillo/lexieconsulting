@@ -25,7 +25,7 @@ def get_managed_users(actor):
     if actor.role == User.Role.admin:
         return User.objects.all()
     if actor.role in (User.Role.management, User.Role.hr_manager):
-        return User.objects.filter(role=User.Role.team_leader)
+        return User.objects.filter(role__in=(User.Role.team_leader, *STAFF_ROLES))
     if actor.role == User.Role.team_leader:
         return User.objects.filter(
             role__in=STAFF_ROLES,
@@ -58,10 +58,13 @@ def get_managers_of(user):
 def attendance_visible_users(actor):
     if not actor or not actor.is_authenticated:
         return User.objects.none()
+    managed_users = get_managed_users(actor)
+    if actor.role in (User.Role.management, User.Role.hr_manager):
+        managed_users = managed_users.filter(role=User.Role.team_leader)
     if actor.role == User.Role.admin:
         return User.objects.all()
     return User.objects.filter(
-        Q(pk=actor.pk) | Q(pk__in=get_managed_users(actor).values("pk"))
+        Q(pk=actor.pk) | Q(pk__in=managed_users.values("pk"))
     )
 
 

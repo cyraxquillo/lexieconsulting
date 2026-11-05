@@ -1,4 +1,5 @@
 from django.contrib.auth.password_validation import validate_password
+from django.utils import timezone
 from rest_framework import serializers
 
 from .models import (
@@ -11,6 +12,31 @@ from .models import (
     Prediction,
     User,
 )
+
+EMPLOYEE_ROLE_ALIASES = {
+    User.Role.hr_manager: Employee.Role.management,
+    User.Role.employee: Employee.Role.staff,
+}
+
+
+def canonical_employee_role(role):
+    return EMPLOYEE_ROLE_ALIASES.get(role, role)
+
+
+def create_employee_for_account(user):
+    role = canonical_employee_role(user.role)
+    if role not in (Employee.Role.staff, Employee.Role.team_leader):
+        return None
+    department, _ = Department.objects.get_or_create(name="Recruitment")
+    return Employee.objects.create(
+        user=user,
+        name=user.name,
+        role=role,
+        department=department,
+        position=user.get_role_display(),
+        date_hired=timezone.localdate(),
+    )
+
 
 DEFAULT_NOTIFICATION_PREFERENCES = {
     "email_evaluations": True,
@@ -51,13 +77,15 @@ class UserAccountCreateSerializer(serializers.Serializer):
 
     def create(self, validated_data):
         password = validated_data.pop("password")
-        return User.objects.create_user(
+        user = User.objects.create_user(
             password=password,
             is_active=True,
             is_staff=False,
             is_superuser=False,
             **validated_data,
         )
+        create_employee_for_account(user)
+        return user
 
 
 class UserAccountUpdateSerializer(serializers.ModelSerializer):
@@ -74,6 +102,25 @@ class UserAccountUpdateSerializer(serializers.ModelSerializer):
         if User.objects.filter(email__iexact=value).exclude(pk=self.instance.pk).exists():
             raise serializers.ValidationError("An account with this email already exists")
         return value
+
+    def update(self, instance, validated_data):
+        previous_role = instance.role
+        account = super().update(instance, validated_data)
+        employee = Employee.objects.filter(user=account).first()
+        if employee is None:
+            create_employee_for_account(account)
+            return account
+        if employee:
+            employee.name = account.name
+            update_fields = ["name"]
+            if previous_role != account.role:
+                employee.role = canonical_employee_role(account.role)
+                update_fields.append("role")
+            if employee.role != Employee.Role.staff and employee.team_leader_id:
+                employee.team_leader = None
+                update_fields.append("team_leader")
+            employee.save(update_fields=update_fields)
+        return account
 
 
 class AttendanceCorrectionRequestSerializer(serializers.ModelSerializer):
@@ -201,6 +248,7 @@ class UserCreateSerializer(serializers.Serializer):
         services_used = validated_data.pop("services_used", None)
         password = validated_data.pop("password")
         user = User.objects.create_user(password=password, **validated_data)
+        create_employee_for_account(user)
         if user.role == User.Role.client:
             Client.objects.create(
                 client_code=f"CL-{user.pk:03d}",
@@ -259,13 +307,15 @@ class DepartmentSerializer(serializers.ModelSerializer):
 
 class EmployeeSerializer(serializers.ModelSerializer):
     department = serializers.CharField(max_length=100)
+    position = serializers.CharField(max_length=120, required=False, allow_blank=True)
     user_id = serializers.IntegerField(required=False, allow_null=True)
     team_leader_id = serializers.IntegerField(required=False, allow_null=True)
+    role = serializers.ChoiceField(choices=Employee.Role.choices, required=False)
 
     class Meta:
         model = Employee
         fields = (
-            "id", "employee_code", "user_id", "team_leader_id", "name", "department", "position",
+            "id", "employee_code", "user_id", "team_leader_id", "name", "role", "department", "position",
             "date_hired", "status", "attendance_rate", "tenure_months", "training_hours",
         )
         read_only_fields = ("id",)
@@ -293,15 +343,56 @@ class EmployeeSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         user_id = attrs.get("user_id", getattr(self.instance, "user_id", None))
-        if user_id is not None:
+        if user_id is not None and ("user_id" in attrs or self.instance is None):
             user = User.objects.filter(pk=user_id).first()
-            if user is None or user.role not in {User.Role.staff, User.Role.employee}:
-                raise serializers.ValidationError({"user_id": "user_id must reference an existing staff or employee account"})
+            if user is None or user.role not in {
+                User.Role.staff,
+                User.Role.employee,
+                User.Role.team_leader,
+            }:
+                raise serializers.ValidationError({"user_id": "user_id must reference an existing Staff or Team Leader account"})
         leader_id = attrs.get("team_leader_id", getattr(self.instance, "team_leader_id", None))
         if leader_id is not None:
             leader = User.objects.filter(pk=leader_id, role=User.Role.team_leader).first()
             if leader is None:
                 raise serializers.ValidationError({"team_leader_id": "team_leader_id must reference a Team Leader account"})
+        role = attrs.get("role", getattr(self.instance, "role", Employee.Role.staff))
+        if not self.instance and not attrs.get("position"):
+            attrs["position"] = dict(Employee.Role.choices)[role]
+        effective_leader_id = attrs.get(
+            "team_leader_id",
+            getattr(self.instance, "team_leader_id", None),
+        )
+        if role != Employee.Role.staff and effective_leader_id is not None:
+            raise serializers.ValidationError(
+                {"team_leader_id": "Only Staff employees can be assigned to a Team Leader."}
+            )
+        if user_id is not None and ("user_id" in attrs or self.instance is None):
+            linked_user = User.objects.get(pk=user_id)
+            if canonical_employee_role(linked_user.role) != role:
+                raise serializers.ValidationError(
+                    {"role": "The employee role must match the linked account role."}
+                )
+        if self.instance and self.instance.user_id and role != canonical_employee_role(self.instance.user.role):
+            request = self.context.get("request")
+            actor = request.user if request else None
+            permitted = (
+                {Employee.Role.management, Employee.Role.team_leader, Employee.Role.staff}
+                if actor and actor.role == User.Role.admin
+                else {Employee.Role.team_leader, Employee.Role.staff}
+            )
+            if not actor or actor.role not in (
+                User.Role.admin,
+                User.Role.management,
+                User.Role.hr_manager,
+            ):
+                raise serializers.ValidationError(
+                    {"role": "You do not have permission to change this account role."}
+                )
+            if role not in permitted:
+                raise serializers.ValidationError(
+                    {"role": "The selected role cannot be assigned to this linked employee."}
+                )
         if not self.partial or "department" in attrs:
             department_name = attrs.get("department")
             if department_name:
@@ -312,6 +403,8 @@ class EmployeeSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         user_id = validated_data.pop("user_id", None)
         team_leader_id = validated_data.pop("team_leader_id", None)
+        if "role" in validated_data and "position" not in validated_data:
+            validated_data["position"] = dict(Employee.Role.choices)[validated_data["role"]]
         if not validated_data.get("employee_code"):
             validated_data["employee_code"] = "pending"
             employee = Employee.objects.create(**validated_data, user_id=user_id, team_leader_id=team_leader_id)
@@ -327,7 +420,22 @@ class EmployeeSerializer(serializers.ModelSerializer):
             instance.user_id = validated_data.pop("user_id")
         if "team_leader_id" in validated_data:
             instance.team_leader_id = validated_data.pop("team_leader_id")
+        role = validated_data.get("role")
+        if role and role != Employee.Role.staff:
+            instance.team_leader = None
+        if instance.user_id:
+            if role and role != canonical_employee_role(instance.user.role):
+                instance.user.role = role
+            if "name" in validated_data:
+                instance.user.name = validated_data["name"]
+            instance.user.save(update_fields=("role", "name"))
         return super().update(instance, validated_data)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.user_id:
+            data["role"] = canonical_employee_role(instance.user.role)
+        return data
 
 
 class EvaluationSerializer(serializers.ModelSerializer):

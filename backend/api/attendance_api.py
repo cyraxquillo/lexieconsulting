@@ -270,7 +270,8 @@ def attendance_correction_requests(request):
     if request.method == "GET":
         if actor.role in MANAGEMENT_ROLES:
             records = AttendanceCorrectionRequest.objects.filter(
-                record__employee__user__in=get_managed_users(actor)
+                Q(record__employee__user__in=get_managed_users(actor))
+                | Q(record__user__in=get_managed_users(actor))
             )
         elif actor.role == User.Role.team_leader:
             records = AttendanceCorrectionRequest.objects.filter(

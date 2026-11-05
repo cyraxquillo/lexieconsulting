@@ -13,6 +13,7 @@ from PIL import Image, UnidentifiedImageError
 from .access import employee_queryset_for, is_management
 from .ml import ModelUnavailableError, supported_department_names
 from .models import AutomationSettings, Department, Employee, Evaluation, Submission, User
+from .serializers import canonical_employee_role, create_employee_for_account
 
 
 PROFILE_IMAGE_MAX_BYTES = 2 * 1024 * 1024
@@ -140,8 +141,8 @@ class EmployeeForm(StyledModelForm):
             "user",
             "team_leader",
             "name",
+            "role",
             "department",
-            "position",
             "date_hired",
         )
         widgets = {"date_hired": forms.DateInput(attrs={"type": "date"})}
@@ -151,7 +152,7 @@ class EmployeeForm(StyledModelForm):
         self.actor = actor
         self.department_warning = ""
         self.fields["user"].queryset = User.objects.filter(
-            role__in=(User.Role.staff, User.Role.employee),
+            role__in=(User.Role.staff, User.Role.employee, User.Role.team_leader),
             is_active=True,
         ).order_by("name")
         self.fields["team_leader"].queryset = User.objects.filter(
@@ -162,6 +163,15 @@ class EmployeeForm(StyledModelForm):
             self.fields.pop("user")
             self.fields.pop("team_leader")
             self.fields.pop("department")
+            self.fields["role"].choices = (
+                (self.instance.role, self.instance.get_role_display()),
+            )
+            self.fields["role"].disabled = True
+        elif actor is not None and actor.role != User.Role.admin:
+            self.fields["role"].choices = (
+                (Employee.Role.team_leader, "Team Leader"),
+                (Employee.Role.staff, "Staff"),
+            )
 
     def clean_department(self):
         department = self.cleaned_data.get("department")
@@ -175,11 +185,36 @@ class EmployeeForm(StyledModelForm):
         user = self.cleaned_data.get("user")
         if user and Employee.objects.filter(user=user).exclude(pk=self.instance.pk).exists():
             raise ValidationError("This account is already linked to an employee.")
+        if user and canonical_employee_role(user.role) != self.cleaned_data.get("role"):
+            raise ValidationError("The employee role must match the linked account role.")
         return user
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if (
+            "team_leader" in self.fields
+            and cleaned_data.get("role") == Employee.Role.staff
+            and cleaned_data.get("team_leader") is None
+        ):
+            self.add_error("team_leader", "Assign each Staff employee to a Team Leader.")
+        if (
+            "team_leader" in self.fields
+            and cleaned_data.get("role") != Employee.Role.staff
+            and cleaned_data.get("team_leader") is not None
+        ):
+            self.add_error("team_leader", "Only Staff employees can be assigned to a Team Leader.")
+        return cleaned_data
 
     def save(self, commit=True):
         employee = super().save(commit=False)
         employee.status = Employee.Status.active
+        linked_user = self.cleaned_data.get("user")
+        if linked_user:
+            linked_user.name = employee.name
+            linked_user.role = employee.role
+            linked_user.save(update_fields=("name", "role"))
+        if not employee.position:
+            employee.position = employee.get_role_display()
         if commit:
             employee.save()
             self.save_m2m()
@@ -457,8 +492,12 @@ class AccountCreateForm(UserCreationForm):
         cleaned_data = super().clean()
         role = cleaned_data.get("role")
         employee = cleaned_data.get("employee")
-        if role not in {User.Role.staff, User.Role.employee} and employee is not None:
-            self.add_error("employee", "Only Staff accounts can be linked to an employee profile.")
+        if role not in {
+            User.Role.staff,
+            User.Role.employee,
+            User.Role.team_leader,
+        } and employee is not None:
+            self.add_error("employee", "Only Staff and Team Leader accounts can be linked to an employee profile.")
         return cleaned_data
 
     def save(self, commit=True):
@@ -472,7 +511,13 @@ class AccountCreateForm(UserCreationForm):
             employee = self.cleaned_data.get("employee")
             if employee is not None:
                 employee.user = user
-                employee.save(update_fields=("user",))
+                employee.name = user.name
+                employee.role = canonical_employee_role(user.role)
+                if employee.role != Employee.Role.staff:
+                    employee.team_leader = None
+                employee.save(update_fields=("user", "name", "role", "team_leader"))
+            else:
+                create_employee_for_account(user)
         return user
 
 
@@ -541,8 +586,17 @@ class AccountEditForm(StyledModelForm):
 
     def clean(self):
         cleaned_data = super().clean()
-        if cleaned_data.get("role") not in {User.Role.staff, User.Role.employee} and cleaned_data.get("employee"):
-            self.add_error("employee", "Only Staff accounts can be linked to an employee profile.")
+        employee = cleaned_data.get("employee")
+        if (
+            cleaned_data.get("role") not in {
+                User.Role.staff,
+                User.Role.employee,
+                User.Role.team_leader,
+            }
+            and employee
+            and employee.user_id != self.instance.pk
+        ):
+            self.add_error("employee", "Only Staff and Team Leader accounts can be linked to an employee profile.")
         return cleaned_data
 
     def save(self, commit=True):
@@ -568,7 +622,19 @@ class AccountEditForm(StyledModelForm):
             if employee:
                 employee.user = user
                 employee.team_leader = self.cleaned_data.get("team_leader")
-                employee.save(update_fields=("user", "team_leader"))
+                employee.name = user.name
+                employee.role = canonical_employee_role(user.role)
+                if employee.role != Employee.Role.staff:
+                    employee.team_leader = None
+                employee.save(update_fields=("user", "team_leader", "name", "role"))
+            elif previous:
+                previous.name = user.name
+                previous.role = canonical_employee_role(user.role)
+                if previous.role != Employee.Role.staff:
+                    previous.team_leader = None
+                previous.save(update_fields=("name", "role", "team_leader"))
+            else:
+                create_employee_for_account(user)
         return user
 
 
