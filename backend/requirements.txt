@@ -9,6 +9,7 @@ psycopg2-binary>=2.9,<3.0
 firebase-admin>=6.9,<8.0
 python-dotenv>=1.1,<2.0
 Pillow>=10.0,<13.0
+vercel-blob>=0.5.0,<1.0
 
 # Prediction model runtime
 joblib>=1.4

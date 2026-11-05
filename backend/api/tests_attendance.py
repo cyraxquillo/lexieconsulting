@@ -5,8 +5,18 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
+from rest_framework.test import APITestCase
 
-from api.models import AttendanceRecord, AutomationSettings, Department, Employee, User
+from api.models import (
+    AttendanceBreak,
+    AttendanceCorrection,
+    AttendanceCorrectionRequest,
+    AttendanceRecord,
+    AutomationSettings,
+    Department,
+    Employee,
+    User,
+)
 
 
 LOCATION_DATA = {"latitude": "0", "longitude": "0", "accuracy": "5"}
@@ -450,3 +460,168 @@ class AttendanceTimeInTests(TestCase):
         self.assertEqual(recreated.attendance_cutoff_time, time(8, 0))
         self.assertEqual(recreated.attendance_time_in_open_time, time(6, 0))
         self.assertEqual(recreated.attendance_expected_time_out, time(19, 0))
+
+
+class AttendanceApiTests(APITestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.department = Department.objects.create(name="Attendance API Department")
+        cls.employee_user = User.objects.create_user(
+            email="api-employee@attendance.test",
+            password="EmployeePass123",
+            name="API Employee",
+            role=User.Role.staff,
+        )
+        cls.employee = Employee.objects.create(
+            employee_code="API-ATT-001",
+            user=cls.employee_user,
+            name="API Employee",
+            department=cls.department,
+            position="Analyst",
+            date_hired=date(2026, 1, 1),
+        )
+        cls.team_leader = User.objects.create_user(
+            email="api-leader@attendance.test",
+            password="LeaderPass123",
+            name="API Team Leader",
+            role=User.Role.team_leader,
+        )
+        cls.employee.team_leader = cls.team_leader
+        cls.employee.save(update_fields=("team_leader",))
+        cls.management = User.objects.create_user(
+            email="api-management@attendance.test",
+            password="ManagementPass123",
+            name="API Management",
+            role=User.Role.management,
+        )
+        cls.settings = AutomationSettings.objects.get_or_create_default()
+        cls.settings.attendance_time_in_open_time = time(6, 0)
+        cls.settings.attendance_break_start_time = time(12, 0)
+        cls.settings.attendance_break_end_time = time(13, 0)
+        cls.settings.attendance_expected_time_out = time(19, 0)
+        cls.settings.save()
+
+    def setUp(self):
+        self.work_date = timezone.localdate()
+        self.clock_in = timezone.make_aware(
+            datetime.combine(self.work_date, time(8, 0)),
+            timezone.get_current_timezone(),
+        )
+        self.record = AttendanceRecord.objects.create(
+            employee=self.employee,
+            user=self.employee_user,
+            work_date=self.work_date,
+            status=AttendanceRecord.Status.present,
+            time_in_status="on_time",
+            clock_in_at=self.clock_in,
+        )
+
+    def test_break_endpoints_enforce_employee_role_and_track_break_timer(self):
+        server_time = timezone.make_aware(
+            datetime.combine(self.work_date, time(12, 5)),
+            timezone.get_current_timezone(),
+        )
+        self.client.force_authenticate(self.employee_user)
+        with patch("api.attendance_api.timezone.now", return_value=server_time):
+            started = self.client.post("/api/attendance/break/start", {}, format="json")
+        self.assertEqual(started.status_code, 201)
+        self.assertEqual(
+            started.data["auto_end_at"],
+            timezone.localtime(AttendanceBreak.objects.get().auto_end_at).isoformat(),
+        )
+        self.assertEqual(AttendanceBreak.objects.filter(attendance=self.record, ended_at__isnull=True).count(), 1)
+
+        with patch("api.attendance_api.timezone.now", return_value=server_time + timedelta(minutes=20)):
+            ended = self.client.post("/api/attendance/break/end", {}, format="json")
+        self.assertEqual(ended.status_code, 200)
+        attendance_break = AttendanceBreak.objects.get()
+        self.assertIsNotNone(attendance_break.ended_at)
+        self.assertFalse(attendance_break.auto_ended)
+
+        self.client.force_authenticate(self.team_leader)
+        denied = self.client.post("/api/attendance/break/start", {}, format="json")
+        self.assertEqual(denied.status_code, 403)
+
+    def test_roster_returns_daily_rows_and_late_status_for_managed_team(self):
+        server_time = timezone.make_aware(
+            datetime.combine(self.work_date, time(9, 0)),
+            timezone.get_current_timezone(),
+        )
+        self.client.force_authenticate(self.team_leader)
+        with patch("api.attendance_api.timezone.now", return_value=server_time):
+            response = self.client.get("/api/attendance/roster")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["user_id"], self.employee_user.id)
+        self.assertEqual(response.data[0]["status"], "On time")
+
+        self.record.clock_in_at = timezone.make_aware(
+            datetime.combine(self.work_date, time(8, 1)),
+            timezone.get_current_timezone(),
+        )
+        self.record.save(update_fields=("clock_in_at",))
+        with patch("api.attendance_api.timezone.now", return_value=server_time):
+            response = self.client.get("/api/attendance/roster")
+        self.assertEqual(response.data[0]["status"], "Late")
+
+    def test_employee_requests_correction_and_assigned_leader_approves_with_audit(self):
+        self.client.force_authenticate(self.employee_user)
+        requested_time = timezone.make_aware(
+            datetime.combine(self.work_date, time(7, 45)),
+            timezone.get_current_timezone(),
+        )
+        response = self.client.post(
+            "/api/attendance/corrections",
+            {
+                "record_id": self.record.pk,
+                "requested_status": AttendanceRecord.Status.present,
+                "change_status": False,
+                "change_clock_in": True,
+                "requested_clock_in_at": requested_time.isoformat(),
+                "change_clock_out": False,
+                "reason": "The clock-in time was recorded incorrectly.",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        correction_request = AttendanceCorrectionRequest.objects.get()
+
+        self.client.force_authenticate(self.team_leader)
+        review = self.client.patch(
+            f"/api/attendance/corrections/{correction_request.pk}",
+            {"status": "approved"},
+            format="json",
+        )
+        self.assertEqual(review.status_code, 200)
+        self.record.refresh_from_db()
+        correction_request.refresh_from_db()
+        self.assertEqual(correction_request.status, AttendanceCorrectionRequest.Status.approved)
+        self.assertEqual(self.record.clock_in_at, requested_time)
+        self.assertEqual(AttendanceCorrection.objects.filter(record=self.record).count(), 1)
+
+    def test_unassigned_team_leader_cannot_review_correction_request(self):
+        self.client.force_authenticate(self.employee_user)
+        request = self.client.post(
+            "/api/attendance/corrections",
+            {
+                "record_id": self.record.pk,
+                "requested_status": AttendanceRecord.Status.excused,
+                "change_status": True,
+                "reason": "Approved leave",
+            },
+            format="json",
+        )
+        self.assertEqual(request.status_code, 201)
+        other_leader = User.objects.create_user(
+            email="unassigned-leader@attendance.test",
+            password="LeaderPass123",
+            name="Unassigned Leader",
+            role=User.Role.team_leader,
+        )
+        self.client.force_authenticate(other_leader)
+        response = self.client.patch(
+            f"/api/attendance/corrections/{request.data['id']}",
+            {"status": "approved"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)

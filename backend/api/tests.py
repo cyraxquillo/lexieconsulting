@@ -1,14 +1,16 @@
 from datetime import date
-import json
-from pathlib import Path
-import tempfile
+from io import BytesIO
+import os
 from urllib.parse import urlencode
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.cache import cache
 from django.core.management import call_command
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
+from PIL import Image
 from rest_framework.test import APITestCase
 
 from api.forms import AutomationSettingsForm
@@ -20,7 +22,16 @@ from api.ml.predict import (
     predict_performance,
     UnknownDepartmentError,
 )
-from .models import AutomationSettings, Department, Employee, Evaluation, Prediction, User
+from .models import (
+    AutomationSettings,
+    Department,
+    Employee,
+    Evaluation,
+    EvaluationCriteriaSettings,
+    Prediction,
+    TrustedDevice,
+    User,
+)
 
 
 @override_settings(ALLOWED_HOSTS=["127.0.0.1", "localhost", "testserver"])
@@ -179,6 +190,240 @@ class BackendApiTests(APITestCase):
             "role": "staff",
         }, format="json")
         self.assertEqual(register_response.status_code, 403)
+
+    def test_management_can_manage_only_workforce_accounts(self):
+        self.authenticate(self.hr)
+        created = self.client.post("/api/accounts", {
+            "name": "New Team Leader",
+            "email": "leader@lexie.ph",
+            "password": "StrongPass123",
+            "role": User.Role.team_leader,
+        }, format="json")
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.data["role"], User.Role.team_leader)
+        self.assertFalse(User.objects.get(email="leader@lexie.ph").is_superuser)
+        leader_account_id = created.data["id"]
+        self.assertIn(
+            leader_account_id,
+            {account["id"] for account in self.client.get("/api/accounts").data},
+        )
+        deactivated = self.client.patch(
+            f"/api/accounts/{leader_account_id}",
+            {"is_active": False},
+            format="json",
+        )
+        self.assertEqual(deactivated.status_code, 200)
+        self.assertFalse(deactivated.data["is_active"])
+        reactivated = self.client.patch(
+            f"/api/accounts/{leader_account_id}",
+            {"is_active": True},
+            format="json",
+        )
+        self.assertEqual(reactivated.status_code, 200)
+        self.assertTrue(reactivated.data["is_active"])
+        role_updated = self.client.patch(
+            f"/api/accounts/{leader_account_id}",
+            {"role": User.Role.staff},
+            format="json",
+        )
+        self.assertEqual(role_updated.status_code, 200)
+        self.assertEqual(role_updated.data["role"], User.Role.staff)
+
+        rejected = self.client.post("/api/accounts", {
+            "name": "New Manager",
+            "email": "manager@lexie.ph",
+            "password": "StrongPass123",
+            "role": User.Role.management,
+        }, format="json")
+        self.assertEqual(rejected.status_code, 403)
+        rejected_admin = self.client.post("/api/accounts", {
+            "name": "Forbidden Admin",
+            "email": "forbidden-admin@lexie.ph",
+            "password": "StrongPass123",
+            "role": User.Role.admin,
+        }, format="json")
+        self.assertEqual(rejected_admin.status_code, 403)
+
+        listed = self.client.get("/api/accounts")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(
+            {account["role"] for account in listed.data},
+            {User.Role.staff, User.Role.employee},
+        )
+        self.assertEqual(self.client.patch(f"/api/accounts/{self.admin.id}", {"is_active": False}).status_code, 403)
+
+    def test_admin_can_create_update_and_deactivate_accounts(self):
+        self.authenticate(self.admin)
+        created = self.client.post("/api/accounts", {
+            "name": "New Manager",
+            "email": "manager@lexie.ph",
+            "password": "StrongPass123",
+            "role": User.Role.management,
+        }, format="json")
+        self.assertEqual(created.status_code, 201)
+        account_id = created.data["id"]
+
+        updated = self.client.patch(
+            f"/api/accounts/{account_id}",
+            {"role": User.Role.team_leader, "is_active": False},
+            format="json",
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.data["role"], User.Role.team_leader)
+        self.assertFalse(updated.data["is_active"])
+
+    def test_admin_can_manage_each_assignable_account_role(self):
+        self.authenticate(self.admin)
+        for role in (User.Role.management, User.Role.team_leader, User.Role.staff):
+            with self.subTest(role=role):
+                created = self.client.post(
+                    "/api/accounts",
+                    {
+                        "email": f"{role}@accounts.test",
+                        "password": "AccountsPassword123!",
+                        "name": f"{role} Account",
+                        "role": role,
+                    },
+                    format="json",
+                )
+                self.assertEqual(created.status_code, 201)
+                account_id = created.data["id"]
+                response = self.client.patch(
+                    f"/api/accounts/{account_id}",
+                    {"is_active": False},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertFalse(response.data["is_active"])
+                response = self.client.patch(
+                    f"/api/accounts/{account_id}",
+                    {"is_active": True},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.data["is_active"])
+
+    def test_management_cannot_see_or_change_admin_or_management_accounts(self):
+        other_manager = User.objects.create_user(
+            email="another-manager@lexie.ph",
+            password="ManagerPassword123!",
+            name="Another Manager",
+            role=User.Role.management,
+        )
+        self.authenticate(self.hr)
+        listed = self.client.get("/api/accounts")
+        self.assertEqual(listed.status_code, 200)
+        visible_ids = {row["id"] for row in listed.data}
+        self.assertNotIn(self.admin.pk, visible_ids)
+        self.assertNotIn(self.hr.pk, visible_ids)
+        self.assertNotIn(other_manager.pk, visible_ids)
+        for changes in ({"role": User.Role.staff}, {"is_active": False}):
+            self.assertEqual(
+                self.client.patch(
+                    f"/api/accounts/{self.hr.pk}",
+                    changes,
+                    format="json",
+                ).status_code,
+                403,
+            )
+        self.hr.refresh_from_db()
+        self.assertEqual(self.hr.role, User.Role.hr_manager)
+        self.assertTrue(self.hr.is_active)
+        for account in (self.admin, other_manager):
+            with self.subTest(account=account.email):
+                response = self.client.patch(
+                    f"/api/accounts/{account.pk}",
+                    {"is_active": False},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            self.client.post(
+                "/api/accounts",
+                {
+                    "name": "Forbidden Manager",
+                    "email": "forbidden-manager@lexie.ph",
+                    "password": "StrongPass123",
+                    "role": User.Role.management,
+                },
+                format="json",
+            ).status_code,
+            403,
+        )
+
+    def test_account_api_forbids_self_role_change_and_self_deactivation(self):
+        self.authenticate(self.admin)
+        for changes in (
+            {"role": User.Role.staff},
+            {"is_active": False},
+            {"role": User.Role.management, "is_active": False},
+        ):
+            with self.subTest(changes=changes):
+                response = self.client.patch(
+                    f"/api/accounts/{self.admin.pk}",
+                    changes,
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 403)
+        self.admin.refresh_from_db()
+        self.assertEqual(self.admin.role, User.Role.admin)
+        self.assertTrue(self.admin.is_active)
+
+    def test_team_leader_and_staff_cannot_access_account_management_or_change_roles(self):
+        leader = User.objects.create_user(
+            email="accounts-leader@lexie.ph",
+            password="LeaderPassword123!",
+            name="Accounts Leader",
+            role=User.Role.team_leader,
+        )
+        self.employee.team_leader = leader
+        self.employee.save(update_fields=("team_leader",))
+        target = self.employee_user
+        for actor in (leader, self.employee_user):
+            self.authenticate(actor)
+            self.assertEqual(self.client.get("/api/accounts").status_code, 403)
+            self.assertEqual(
+                self.client.post(
+                    "/api/accounts",
+                    {
+                        "name": "Blocked Account",
+                        "email": f"blocked-{actor.pk}@lexie.ph",
+                        "password": "StrongPass123",
+                        "role": User.Role.staff,
+                    },
+                    format="json",
+                ).status_code,
+                403,
+            )
+            self.assertEqual(
+                self.client.patch(
+                    f"/api/accounts/{target.pk}",
+                    {"role": User.Role.team_leader},
+                    format="json",
+                ).status_code,
+                403,
+            )
+
+    def test_staff_cannot_list_or_create_accounts(self):
+        self.authenticate(self.employee_user)
+        self.assertEqual(self.client.get("/api/accounts").status_code, 403)
+        self.assertEqual(self.client.post("/api/accounts", {}, format="json").status_code, 403)
+
+    def test_team_leader_employee_list_is_limited_to_assigned_team(self):
+        leader = User.objects.create_user(
+            email="leader@lexie.ph",
+            password="LeaderPass123",
+            name="Team Leader",
+            role=User.Role.team_leader,
+        )
+        self.employee.team_leader = leader
+        self.employee.save(update_fields=["team_leader"])
+        self.authenticate(leader)
+
+        response = self.client.get("/api/employees")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["id"] for row in response.data], [self.employee.id])
 
     def test_admin_employee_crud(self):
         self.authenticate(self.admin)
@@ -910,7 +1155,7 @@ class WebViewTests(TestCase):
             with self.subTest(path=path):
                 self.assertEqual(self.client.get(path).status_code, 200)
 
-    def test_admin_can_update_criteria_without_changing_the_database(self):
+    def test_admin_can_update_criteria_in_the_database(self):
         self.client.force_login(self.admin)
         fields = {
             "productivity_score": "Output",
@@ -919,24 +1164,12 @@ class WebViewTests(TestCase):
             "teamwork_score": "Team contribution",
             "communication_score": "Communication",
         }
-        with tempfile.TemporaryDirectory() as directory:
-            criteria_path = Path(directory) / "criteria.json"
-            criteria_path.write_text(
-                json.dumps(
-                    {
-                        "productivity_score": "Productivity",
-                        "attendance_score": "Attendance",
-                        "quality_score": "Quality of work",
-                        "teamwork_score": "Teamwork",
-                        "communication_score": "Communication",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            with patch("api.web_views.CRITERIA_PATH", criteria_path):
-                response = self.client.post("/evaluations/criteria/", fields)
-                self.assertRedirects(response, "/evaluations/criteria/")
-                self.assertEqual(json.loads(criteria_path.read_text(encoding="utf-8")), fields)
+        response = self.client.post("/evaluations/criteria/", fields)
+        self.assertRedirects(response, "/evaluations/criteria/")
+        self.assertEqual(
+            EvaluationCriteriaSettings.objects.get(pk=1).criteria,
+            fields,
+        )
 
     def test_password_can_be_changed_without_losing_the_session(self):
         self.client.force_login(self.employee_user)
@@ -955,3 +1188,166 @@ class WebViewTests(TestCase):
         self.employee_user.refresh_from_db()
         self.assertTrue(self.employee_user.check_password("New-WebPass-123!"))
         self.assertEqual(self.client.get("/settings/").status_code, 200)
+
+
+class ReactFeaturesApiTests(APITestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = User.objects.create_user(
+            email="feature-admin@lexie.ph",
+            password="AdminPassword123!",
+            name="Feature Admin",
+            role=User.Role.admin,
+            is_staff=True,
+            is_superuser=True,
+        )
+        cls.management = User.objects.create_user(
+            email="feature-manager@lexie.ph",
+            password="ManagerPassword123!",
+            name="Feature Manager",
+            role=User.Role.management,
+        )
+        cls.leader = User.objects.create_user(
+            email="feature-leader@lexie.ph",
+            password="LeaderPassword123!",
+            name="Feature Leader",
+            role=User.Role.team_leader,
+        )
+        cls.staff = User.objects.create_user(
+            email="feature-staff@lexie.ph",
+            password="StaffPassword123!",
+            name="Feature Staff",
+            role=User.Role.staff,
+        )
+        cls.department = Department.objects.create(name="Feature Department")
+        cls.employee = Employee.objects.create(
+            employee_code="EMP-FEATURE",
+            user=cls.staff,
+            team_leader=cls.leader,
+            name=cls.staff.name,
+            department=cls.department,
+            position="Analyst",
+            date_hired=date(2024, 1, 1),
+        )
+        cls.evaluation = Evaluation.objects.create(
+            employee=cls.employee,
+            evaluator=cls.leader,
+            date=date(2026, 1, 15),
+            productivity_score=80,
+            attendance_score=80,
+            quality_score=80,
+            teamwork_score=80,
+            communication_score=80,
+        )
+
+    def authenticate(self, user):
+        self.client.force_authenticate(user=user)
+
+    def test_reports_filter_and_export_are_scoped_to_team_leader(self):
+        self.authenticate(self.leader)
+        response = self.client.get(
+            "/api/reports/records",
+            {"department": self.department.name, "start_date": "2026-01-01", "end_date": "2026-01-31"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["record_count"], 1)
+        self.assertEqual(self.client.get("/api/reports/export.csv").status_code, 200)
+        pdf = self.client.get("/api/reports/export.pdf")
+        self.assertEqual(pdf.status_code, 200)
+        self.assertEqual(pdf["Content-Type"], "application/pdf")
+
+    def test_management_settings_criteria_and_notification_permissions(self):
+        self.authenticate(self.management)
+        settings_response = self.client.get("/api/automation/settings")
+        self.assertEqual(settings_response.status_code, 200)
+        update = self.client.patch("/api/automation/settings", {"scoring_mode": "automatic"}, format="json")
+        self.assertEqual(update.status_code, 200)
+        criteria = self.client.get("/api/evaluation-criteria")
+        self.assertEqual(criteria.status_code, 200)
+        updated_criteria = {**criteria.data, "productivity_score": "Output"}
+        self.assertEqual(
+            self.client.put("/api/evaluation-criteria", updated_criteria, format="json").status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/notifications/compose",
+                {"recipient_id": self.leader.pk, "title": "Review", "message": "Please review."},
+                format="json",
+            ).status_code,
+            201,
+        )
+        self.authenticate(self.staff)
+        self.assertEqual(self.client.get("/api/automation/settings").status_code, 403)
+        self.assertEqual(self.client.post("/api/notifications/compose", {}, format="json").status_code, 403)
+
+    def test_hybrid_review_and_prediction_batch_use_existing_employee_scope(self):
+        self.authenticate(self.leader)
+        review = self.client.post(
+            f"/api/evaluations/{self.evaluation.pk}/hybrid-review",
+            {"team_leader_rating": 91},
+            format="json",
+        )
+        self.assertEqual(review.status_code, 200)
+        self.assertEqual(review.data["team_leader_rating"], 91)
+        with patch(
+            "api.ml.predict.predict_performance",
+            return_value={
+                "predicted_category": "Average",
+                "confidence_score": 0.8,
+                "feature_importances": {},
+                "model_source": "test",
+                "model_version": "test",
+            },
+        ):
+            batch = self.client.post("/api/predictions/rerun", {}, format="json")
+        self.assertEqual(batch.status_code, 200)
+        self.assertEqual(batch.data["completed"], 1)
+
+    def test_profile_photo_trusted_device_and_cron_endpoints_are_protected(self):
+        self.authenticate(self.staff)
+        image_buffer = BytesIO()
+        Image.new("RGB", (1, 1)).save(image_buffer, format="PNG")
+        photo = SimpleUploadedFile(
+            "profile.png",
+            image_buffer.getvalue(),
+            content_type="image/png",
+        )
+        with patch("api.blob_storage.upload_profile_photo_blob", return_value="profiles/test/photo.png"):
+            uploaded = self.client.post("/api/users/me/photo", {"photo": photo}, format="multipart")
+        self.assertEqual(uploaded.status_code, 200)
+        self.staff.refresh_from_db()
+        self.assertEqual(self.staff.photo_blob_path, "profiles/test/photo.png")
+        with patch(
+            "api.feature_api.get_submission_blob",
+            return_value=SimpleNamespace(body=b"image-data", metadata=SimpleNamespace(content_type="image/png")),
+        ):
+            image = self.client.get("/api/users/me/photo")
+        self.assertEqual(image.status_code, 200)
+        self.assertEqual(image["Content-Type"], "image/png")
+
+        device = TrustedDevice.objects.create(
+            user=self.staff,
+            token_hash="a" * 64,
+            label="Test browser",
+            status=TrustedDevice.Status.approved,
+        )
+        self.authenticate(self.admin)
+        self.assertEqual(self.client.get("/api/devices").status_code, 200)
+        self.assertEqual(
+            self.client.patch(f"/api/devices/{device.pk}", {"action": "remove"}, format="json").status_code,
+            200,
+        )
+        device.refresh_from_db()
+        self.assertEqual(device.status, TrustedDevice.Status.revoked)
+
+        with patch.dict(os.environ, {"CRON_SECRET": "cron-test-secret"}), patch(
+            "api.automation.create_monthly_evaluations", return_value=[]
+        ):
+            denied = self.client.get("/api/automation/monthly-evaluations")
+            allowed = self.client.get(
+                "/api/automation/monthly-evaluations",
+                HTTP_AUTHORIZATION="Bearer cron-test-secret",
+            )
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(allowed.status_code, 200)

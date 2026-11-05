@@ -198,3 +198,14 @@ def submission_queryset_for(user):
     if user.role in MANAGEMENT_ROLES:
         return queryset
     return queryset.none()
+
+
+def can_review_submission(actor, submission):
+    if not actor or not actor.is_authenticated or not submission:
+        return False
+    if actor.role in MANAGEMENT_ROLES:
+        return True
+    return bool(
+        actor.role == User.Role.team_leader
+        and submission.employee.team_leader_id == actor.pk
+    )

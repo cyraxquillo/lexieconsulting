@@ -1,9 +1,8 @@
 from functools import wraps
 import hashlib
 import csv
-import json
 import logging
-from pathlib import Path
+import mimetypes
 import secrets
 from collections import defaultdict
 from datetime import date
@@ -14,11 +13,11 @@ from django.contrib.auth import authenticate, login, logout, update_session_auth
 from django.contrib.auth.decorators import login_required
 from django.db import IntegrityError, transaction
 from django.db.models import Case, Count, IntegerField, Q, Value, When
-from django.http import HttpResponse, HttpResponseForbidden, HttpResponseNotFound
+from django.http import Http404, HttpResponse, HttpResponseForbidden, HttpResponseNotFound
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
-from django.utils.http import url_has_allowed_host_and_scheme
+from django.utils.http import content_disposition_header, url_has_allowed_host_and_scheme
 
 from .access import (
     MANAGEMENT_ROLES,
@@ -51,6 +50,7 @@ from .models import Client, Department, Employee, Evaluation, Prediction, Submis
 from .models import (
     AutomationSettings,
     Department,
+    EvaluationCriteriaSettings,
     Employee,
     Evaluation,
     Notification,
@@ -71,7 +71,13 @@ from .login_throttling import (
 logger = logging.getLogger(__name__)
 EMPLOYEE_ROLES = (User.Role.staff, User.Role.employee)
 WORKFORCE_ROLES = MANAGEMENT_ROLES
-CRITERIA_PATH = Path(__file__).resolve().parent / "criteria.json"
+DEFAULT_EVALUATION_CRITERIA = {
+    "productivity_score": "Productivity",
+    "attendance_score": "Attendance",
+    "quality_score": "Quality of work",
+    "teamwork_score": "Teamwork",
+    "communication_score": "Communication",
+}
 LEGACY_DEVICE_COOKIE_NAME = "lexie_device"
 
 
@@ -868,9 +874,24 @@ def submission_create(request):
     if request.method == "POST" and form.is_valid():
         submission = form.save(commit=False)
         submission.employee = employee
-        submission.save()
-        messages.success(request, "Work submission uploaded.")
-        return redirect("submission-list")
+        uploaded_file = form.cleaned_data["file"]
+        try:
+            from .blob_storage import sanitize_filename, upload_submission_blob
+
+            submission.blob_path = upload_submission_blob(employee.pk, uploaded_file)
+        except RuntimeError as error:
+            logger.error("Submission storage is not configured: %s", error)
+            form.add_error(None, "Submission file storage is not configured.")
+        except Exception:
+            logger.exception("Unable to upload work submission to Vercel Blob.")
+            form.add_error("file", "Unable to store the uploaded file. Please try again.")
+        else:
+            submission.file = ""
+            submission.file_name = sanitize_filename(uploaded_file.name)
+            submission.file_content_type = uploaded_file.content_type or "application/octet-stream"
+            submission.save()
+            messages.success(request, "Work submission uploaded.")
+            return redirect("submission-list")
     return render(
         request,
         "api/submission_form.html",
@@ -919,6 +940,32 @@ def submission_review(request, pk):
     )
 
 
+@login_required
+def submission_file_download(request, pk):
+    submission = get_object_or_404(submission_queryset_for(request.user), pk=pk)
+    if submission.blob_path:
+        from .blob_storage import get_submission_blob
+
+        try:
+            result = get_submission_blob(submission.blob_path)
+        except Exception:
+            logger.exception("Unable to retrieve work submission %s from Vercel Blob.", submission.pk)
+            return HttpResponse("Unable to retrieve the submission file.", status=502)
+        content = result.body
+        content_type = submission.file_content_type or result.metadata.content_type or "application/octet-stream"
+        filename = submission.file_name or "submission"
+    elif submission.file:
+        content = submission.file.read()
+        filename = submission.file.name.rsplit("/", 1)[-1]
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    else:
+        raise Http404
+    response = HttpResponse(content, content_type=content_type)
+    response["Content-Disposition"] = content_disposition_header(True, filename)
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
 @roles_required(*MANAGEMENT_ROLES)
 def employee_delete(request, pk):
     employee = get_object_or_404(Employee, pk=pk)
@@ -941,8 +988,11 @@ def employee_delete(request, pk):
 
 
 def get_evaluation_criteria():
-    with CRITERIA_PATH.open(encoding="utf-8") as criteria_file:
-        criteria = json.load(criteria_file)
+    settings_row, _ = EvaluationCriteriaSettings.objects.get_or_create(
+        pk=1,
+        defaults={"criteria": DEFAULT_EVALUATION_CRITERIA},
+    )
+    criteria = settings_row.criteria
     expected = {
         "productivity_score",
         "attendance_score",
@@ -996,7 +1046,7 @@ def performance_create(request):
     form = EvaluationForm(request.POST or None, actor=request.user)
     try:
         criteria = get_evaluation_criteria()
-    except (OSError, json.JSONDecodeError, ValueError):
+    except ValueError:
         logger.exception("Unable to load evaluation criteria")
         criteria = {}
         messages.error(request, "Evaluation criteria could not be loaded.")
@@ -1028,7 +1078,7 @@ def performance_edit(request, pk):
     )
     try:
         criteria = get_evaluation_criteria()
-    except (OSError, json.JSONDecodeError, ValueError):
+    except ValueError:
         logger.exception("Unable to load evaluation criteria")
         criteria = {}
         messages.error(request, "Evaluation criteria could not be loaded.")
@@ -1060,7 +1110,7 @@ def evaluation_list(request):
     attach_latest_predictions(request.user, [evaluation.employee for evaluation in evaluations])
     try:
         criteria = get_evaluation_criteria()
-    except (OSError, json.JSONDecodeError, ValueError):
+    except ValueError:
         logger.exception("Unable to load evaluation criteria")
         criteria = {}
         messages.error(request, "Evaluation criteria could not be loaded.")
@@ -1085,7 +1135,7 @@ def evaluation_create(request):
     form = EvaluationForm(request.POST or None, actor=request.user)
     try:
         criteria = get_evaluation_criteria()
-    except (OSError, json.JSONDecodeError, ValueError):
+    except ValueError:
         logger.exception("Unable to load evaluation criteria")
         criteria = {}
         messages.error(request, "Evaluation criteria could not be loaded.")
@@ -1113,7 +1163,7 @@ def evaluation_detail(request, pk):
         return HttpResponseForbidden("You do not have permission to view evaluations.")
     try:
         criteria = get_evaluation_criteria()
-    except (OSError, json.JSONDecodeError, ValueError):
+    except ValueError:
         logger.exception("Unable to load evaluation criteria")
         criteria = {}
     return render(
@@ -1148,7 +1198,7 @@ def evaluation_edit(request, pk):
     )
     try:
         criteria = get_evaluation_criteria()
-    except (OSError, json.JSONDecodeError, ValueError):
+    except ValueError:
         logger.exception("Unable to load evaluation criteria")
         criteria = {}
         messages.error(request, "Evaluation criteria could not be loaded.")
@@ -1195,7 +1245,7 @@ def evaluation_delete(request, pk):
 def criteria_manage(request):
     try:
         criteria = get_evaluation_criteria()
-    except (OSError, json.JSONDecodeError, ValueError):
+    except ValueError:
         logger.exception("Unable to load evaluation criteria")
         messages.error(request, "Evaluation criteria could not be loaded.")
         criteria = {}
@@ -1213,11 +1263,13 @@ def criteria_manage(request):
         elif len({value.casefold() for value in updated.values()}) != len(updated):
             messages.error(request, "Criterion names must be unique.")
         else:
-            temporary_path = CRITERIA_PATH.with_suffix(".json.tmp")
-            with temporary_path.open("w", encoding="utf-8") as criteria_file:
-                json.dump(updated, criteria_file, ensure_ascii=False, indent=2)
-                criteria_file.write("\n")
-            temporary_path.replace(CRITERIA_PATH)
+            settings_row, _ = EvaluationCriteriaSettings.objects.get_or_create(
+                pk=1,
+                defaults={"criteria": DEFAULT_EVALUATION_CRITERIA},
+            )
+            settings_row.criteria = updated
+            settings_row.updated_by = request.user
+            settings_row.save(update_fields=("criteria", "updated_by", "updated_at"))
             messages.success(request, "Evaluation criteria updated.")
             return redirect("criteria-manage")
         criteria = updated

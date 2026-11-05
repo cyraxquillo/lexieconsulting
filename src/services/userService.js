@@ -24,3 +24,18 @@ export async function updateNotificationPrefs(preferences) {
   const { data } = await api.put('/users/me/notifications', preferences)
   return data
 }
+
+export async function getUserAccounts() {
+  const { data } = await api.get('/accounts')
+  return data
+}
+
+export async function createUserAccount(account) {
+  const { data } = await api.post('/accounts', account)
+  return data
+}
+
+export async function updateUserAccount(id, changes) {
+  const { data } = await api.patch(`/accounts/${id}`, changes)
+  return data
+}

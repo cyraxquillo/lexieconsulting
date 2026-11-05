@@ -1,7 +1,7 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 
-from . import attendance_api, views
+from . import attendance_api, feature_api, views
 
 urlpatterns = [
     path("auth/login", views.login_view, name="login"),
@@ -9,7 +9,10 @@ urlpatterns = [
     path("auth/refresh", TokenRefreshView.as_view(), name="token_refresh"),
     path("auth/register", views.register_user, name="register"),
     path("auth/me", views.auth_me, name="auth_me"),
+    path("accounts", views.user_accounts, name="user_accounts"),
+    path("accounts/<int:account_id>", views.user_account_detail, name="user_account_detail"),
     path("users/me", views.user_profile, name="user_profile"),
+    path("users/me/photo", feature_api.profile_photo, name="profile_photo"),
     path("users/me/password", views.update_password, name="update_password"),
     path("users/me/notifications", views.notification_preferences, name="notification_preferences"),
     path("departments", views.departments, name="departments"),
@@ -17,15 +20,34 @@ urlpatterns = [
     path("employees/<str:employee_id>", views.employee_detail, name="employee_detail"),
     path("evaluations", views.evaluations, name="evaluations"),
     path("evaluations/<int:evaluation_id>", views.evaluation_detail, name="evaluation_detail"),
+    path("evaluations/<int:evaluation_id>/hybrid-review", feature_api.hybrid_review, name="hybrid_review"),
+    path("evaluation-criteria", feature_api.evaluation_criteria, name="evaluation_criteria"),
     path("predictions", views.predictions, name="predictions"),
+    path("predictions/rerun", feature_api.rerun_predictions, name="rerun_predictions"),
     path("predictions/<str:employee_id>", views.create_prediction, name="create_prediction"),
+    path("reports/records", feature_api.report_records, name="report_records"),
+    path("reports/export.csv", feature_api.report_export_csv, name="report_export_csv"),
+    path("reports/export.pdf", feature_api.report_export_pdf, name="report_export_pdf"),
+    path("automation/settings", feature_api.automation_settings, name="automation_settings_api"),
+    path("automation/monthly-evaluations", feature_api.monthly_evaluations_cron, name="monthly_evaluations_cron"),
+    path("notifications/compose", feature_api.notification_composer, name="notification_composer"),
+    path("devices", feature_api.trusted_devices, name="trusted_devices_api"),
+    path("devices/<int:device_id>", feature_api.trusted_device_action, name="trusted_device_action_api"),
     path("reports/summary", views.report_summary, name="report_summary"),
     path("reports/performance-trend", views.performance_trend, name="performance_trend"),
     path("clients", views.clients, name="clients"),
     path("clients/me", views.my_client, name="my_client"),
+    path("submissions", views.submissions, name="submissions"),
+    path("submissions/<int:submission_id>", views.submission_review, name="submission_review"),
+    path("submissions/<int:submission_id>/file", views.submission_file, name="submission_file"),
     path("attendance", attendance_api.attendance_records, name="attendance_records"),
+    path("attendance/roster", attendance_api.attendance_roster, name="attendance_roster"),
     path("attendance/time-in", attendance_api.attendance_time_in, name="api_attendance_time_in"),
     path("attendance/time-out", attendance_api.attendance_time_out, name="api_attendance_time_out"),
+    path("attendance/break/start", attendance_api.attendance_break_start, name="api_attendance_break_start"),
+    path("attendance/break/end", attendance_api.attendance_break_end, name="api_attendance_break_end"),
+    path("attendance/corrections", attendance_api.attendance_correction_requests, name="attendance_correction_requests"),
+    path("attendance/corrections/<int:request_id>", attendance_api.attendance_correction_review, name="attendance_correction_review"),
     path("office-locations", attendance_api.office_locations, name="office_locations"),
     path(
         "office-locations/<int:pk>",

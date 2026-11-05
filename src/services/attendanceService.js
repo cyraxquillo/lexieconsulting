@@ -5,6 +5,11 @@ export async function getAttendance() {
   return data
 }
 
+export async function getAttendanceRoster() {
+  const { data } = await api.get('/attendance/roster')
+  return data
+}
+
 export async function timeIn(location) {
   const { data } = await api.post('/attendance/time-in', location)
   return data
@@ -12,6 +17,31 @@ export async function timeIn(location) {
 
 export async function timeOut(location) {
   const { data } = await api.post('/attendance/time-out', location)
+  return data
+}
+
+export async function breakStart() {
+  const { data } = await api.post('/attendance/break/start')
+  return data
+}
+
+export async function breakEnd() {
+  const { data } = await api.post('/attendance/break/end')
+  return data
+}
+
+export async function getAttendanceCorrectionRequests() {
+  const { data } = await api.get('/attendance/corrections')
+  return data
+}
+
+export async function requestAttendanceCorrection(payload) {
+  const { data } = await api.post('/attendance/corrections', payload)
+  return data
+}
+
+export async function reviewAttendanceCorrection(id, decision) {
+  const { data } = await api.patch(`/attendance/corrections/${id}`, decision)
   return data
 }
 

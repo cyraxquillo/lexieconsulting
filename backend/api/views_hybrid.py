@@ -41,6 +41,7 @@ from .hybrid import (
     calculate_hybrid_score,
     calculate_work_score,
     update_employee_attendance_rate,
+    update_hybrid_evaluation_score,
     working_days_in_month,
 )
 from .models import AttendanceBreak, AttendanceRecord, AutomationSettings, Employee, Evaluation, Submission, User
@@ -549,37 +550,7 @@ def hybrid_review(request, pk):
     )
     if request.method == "POST" and form.is_valid():
         form.save()
-        attendance_records = AttendanceRecord.objects.filter(
-            employee=evaluation.employee,
-            work_date__year=evaluation.cycle_month.year,
-            work_date__month=evaluation.cycle_month.month,
-        )
-        settings = _settings()
-        attendance = calculate_attendance_rate(
-            list(attendance_records),
-            settings,
-            working_days_in_month(settings, evaluation.cycle_month, evaluation.employee.date_hired),
-        )
-        evaluation.employee.attendance_rate = attendance["attendance_rate"]
-        evaluation.employee.save(update_fields=("attendance_rate",))
-        submissions = list(
-            Submission.objects.filter(
-                employee=evaluation.employee,
-                uploaded_at__year=evaluation.cycle_month.year,
-                uploaded_at__month=evaluation.cycle_month.month,
-            )
-        )
-        work = calculate_work_score(submissions)
-        score = calculate_hybrid_score(
-            attendance_rate=attendance["attendance_rate"],
-            work_score=work["work_score"],
-            team_leader_rating=evaluation.team_leader_rating,
-            management_rating=evaluation.management_rating,
-            weights={"attendance": 20, "work": 30, "team_leader": 30, "management": 20},
-        )
-        evaluation.hybrid_score = score["overall_score"]
-        evaluation.phase = Evaluation.Phase.finalized if evaluation.management_rating is not None else Evaluation.Phase.management
-        evaluation.save(update_fields=("team_leader_rating", "management_rating", "hybrid_score", "phase"))
+        update_hybrid_evaluation_score(evaluation)
         messages.success(request, "Hybrid evaluation score saved.")
         return redirect("evaluation-detail", pk=evaluation.pk)
     return render(

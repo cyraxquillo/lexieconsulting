@@ -4,7 +4,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.utils import timezone
 
-from .models import AttendanceRecord, Submission
+from .models import AttendanceRecord, AutomationSettings, Evaluation, Submission
 
 DEFAULT_WEIGHTS = {
     "attendance": 20,
@@ -230,3 +230,44 @@ def calculate_hybrid_score(
         "management_weight": effective_weights["management"],
         "effective_weights": effective_weights,
     }
+
+
+def update_hybrid_evaluation_score(evaluation):
+    settings = AutomationSettings.objects.get_or_create_default()
+    month = evaluation.cycle_month or evaluation.date.replace(day=1)
+    records = list(
+        AttendanceRecord.objects.filter(
+            employee=evaluation.employee,
+            work_date__year=month.year,
+            work_date__month=month.month,
+        )
+    )
+    attendance = calculate_attendance_rate(
+        records,
+        settings,
+        working_days_in_month(settings, month, evaluation.employee.date_hired),
+    )
+    evaluation.employee.attendance_rate = attendance["attendance_rate"]
+    evaluation.employee.save(update_fields=("attendance_rate",))
+    submissions = list(
+        Submission.objects.filter(
+            employee=evaluation.employee,
+            uploaded_at__year=month.year,
+            uploaded_at__month=month.month,
+        )
+    )
+    work = calculate_work_score(submissions)
+    score = calculate_hybrid_score(
+        attendance["attendance_rate"],
+        work["work_score"],
+        evaluation.team_leader_rating,
+        evaluation.management_rating,
+    )
+    evaluation.hybrid_score = score["overall_score"]
+    evaluation.phase = (
+        Evaluation.Phase.finalized
+        if evaluation.management_rating is not None
+        else Evaluation.Phase.management
+    )
+    evaluation.save(update_fields=("hybrid_score", "phase"))
+    return score

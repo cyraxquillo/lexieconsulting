@@ -5,11 +5,22 @@ import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ResponsiveContaine
 import { getMyClient } from './services/clientService'
 import { login as authLogin } from './services/authService'
 import { createEmployee, getEmployee, getEmployees, updateEmployee } from './services/employeeService'
-import { createEvaluation, getEvaluations } from './services/evaluationService'
+import { createEvaluation, deleteEvaluation, getEvaluations, updateEvaluation } from './services/evaluationService'
 import { getPredictions, runPrediction } from './services/predictionService'
 import { getPerformanceTrend, getSummary } from './services/reportService'
-import { getMe as getUserProfile, getNotificationPrefs, updateNotificationPrefs, updatePassword, updateProfile } from './services/userService'
+import { createUserAccount, getMe as getUserProfile, getNotificationPrefs, getUserAccounts, updateNotificationPrefs, updatePassword, updateProfile, updateUserAccount } from './services/userService'
+import SubmissionsPage from './SubmissionsPage'
 import { AttendancePage, NotificationBell, NotificationsPage, OfficeLocationsPage } from './AttendancePages'
+import {
+  AutomationSettingsPage,
+  EvaluationCriteriaPage,
+  NotificationComposerPage,
+  PredictionHistoryPage,
+  ProfilePhotoControl,
+  ReportsPage,
+  TrustedDevicesPanel,
+} from './FeaturePages'
+import { getEvaluationCriteria as fetchEvaluationCriteria, submitHybridReview } from './services/featureService'
 import StatusBadge from './components/StatusBadge'
 import { roleHome, useAuthStore } from './store/useAuthStore'
 import './settings.css'
@@ -17,6 +28,13 @@ import './settings.css'
 const cn = (...classes) => classes.filter(Boolean).join(' ')
 const roleLabels = { admin: 'Admin / IT Manager', management: 'Management', hr_manager: 'Management', team_leader: 'Team Leader', staff: 'Staff / Employee', employee: 'Staff / Employee', client: 'Client portal' }
 const employeeRoleGroups = { management: 'management', hr_manager: 'management', team_leader: 'team_leader', staff: 'staff', employee: 'staff' }
+const managementRoles = ['admin', 'management', 'hr_manager']
+const staffRoles = ['staff', 'employee']
+const accountRoleOptions = {
+  admin: [['management', 'Management'], ['team_leader', 'Team Leader'], ['staff', 'Staff']],
+  management: [['team_leader', 'Team Leader'], ['staff', 'Staff']],
+  hr_manager: [['team_leader', 'Team Leader'], ['staff', 'Staff']],
+}
 function employeeRoleGroup(role) {
   const normalized = String(role || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
   return employeeRoleGroups[normalized] || normalized
@@ -130,14 +148,21 @@ function Shell({ children }) {
   const navigate = useNavigate()
   const location = useLocation()
   const [open, setOpen] = useState(false)
+  const isManager = managementRoles.includes(user.role)
+  const isTeamLeader = user.role === 'team_leader'
   const nav = [
-    { label: 'Overview', to: rolePath(user.role), icon: LayoutDashboard },
-    ...(user.role === 'admin' ? [{ label: 'Employees', to: rolePath(user.role, 'employees'), icon: Users }] : []),
+    ...(isTeamLeader
+      ? [{ label: 'My Team', to: rolePath(user.role, 'team'), icon: Users }]
+      : [{ label: 'Overview', to: rolePath(user.role), icon: LayoutDashboard }]),
+    ...(isManager ? [{ label: 'Employees', to: rolePath(user.role, 'employees'), icon: Users }] : []),
     ...(user.role !== 'client' ? [{ label: 'Attendance', to: rolePath(user.role, 'attendance'), icon: Clock3 }] : []),
     ...(user.role === 'admin' ? [{ label: 'Office locations', to: rolePath(user.role, 'office-locations'), icon: BriefcaseBusiness }] : []),
     ...(user.role !== 'client' ? [{ label: 'Notifications', to: rolePath(user.role, 'notifications'), icon: Bell }] : []),
+    ...(isManager || isTeamLeader ? [{ label: 'Compose notification', to: rolePath(user.role, 'compose-notification'), icon: Bell }] : []),
+    ...(user.role !== 'client' ? [{ label: 'Work submissions', to: rolePath(user.role, 'submissions'), icon: FolderUp }] : []),
     ...(user.role !== 'client' ? [{ label: 'Evaluations', to: rolePath(user.role, 'evaluations'), icon: ClipboardCheck }, { label: 'Predictions', to: rolePath(user.role, 'predictions'), icon: BarChart3 }] : []),
-    ...(user.role === 'admin' ? [{ label: 'Reports', to: rolePath(user.role, 'reports'), icon: FileBarChart }] : []),
+    ...(isManager ? [{ label: 'User accounts', to: rolePath(user.role, 'accounts'), icon: UserRound }, { label: 'Automation settings', to: rolePath(user.role, 'automation'), icon: Settings }, { label: 'Evaluation criteria', to: rolePath(user.role, 'evaluation-criteria'), icon: ClipboardCheck }] : []),
+    ...(isManager || isTeamLeader ? [{ label: 'Reports', to: rolePath(user.role, 'reports'), icon: FileBarChart }] : []),
     { label: 'Settings', to: rolePath(user.role, 'settings'), icon: Settings },
   ]
   const current = nav.find((item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`))
@@ -147,13 +172,15 @@ function Shell({ children }) {
 
 function Dashboard() {
   const user = useAuthStore((state) => state.user)
-  if (user.role === 'staff' || user.role === 'employee') return <StaffDashboard />
+  if (staffRoles.includes(user.role)) return <StaffDashboard />
   if (user.role === 'client') return <ClientDashboard />
   return <AdminDashboard />
 }
 
 function AdminDashboard() {
-  const navigate = useNavigate()
+  const navigateTo = useNavigate()
+  const user = useAuthStore((state) => state.user)
+  const navigate = (path) => navigateTo(path.replace(/^\/admin/, `/${user.role}`))
   const [range, setRange] = useState('6')
   const resource = useApiResource(async () => {
     const [summary, trend, employees, evaluations, predictions] = await Promise.all([getSummary(), getPerformanceTrend(), getEmployees(), getEvaluations(), getPredictions()])
@@ -170,7 +197,8 @@ function AdminDashboard() {
 
 function TeamPulse({ employees }) {
   const navigate = useNavigate()
-  return <div className="panel table-panel"><SectionHeader title="Team pulse" action={<button className="text-button" onClick={() => navigate('/admin/employees')}>View all employees <ArrowUpRight size={15} /></button>} /><div className="table-scroll"><table><thead><tr><th>Employee</th><th>Department</th><th>Score</th><th>Prediction</th><th>Last evaluation</th><th /></tr></thead><tbody>{employees.slice(0, 5).map((employee) => <tr key={employee.id} onClick={() => navigate(`/admin/employees/${employee.id}`)} className="clickable-row"><td><div className="person-cell"><span className="avatar small">{employee.avatar}</span><span><strong>{employee.name}</strong><small>{employee.role}</small></span></div></td><td>{employee.department}</td><td><strong>{employee.score}</strong><span className="score-max">/100</span></td><td><StatusBadge status={employee.status} /></td><td>{formatDate(employee.latestEvaluation?.date)}</td><td><button className="icon-button" aria-label={`Open ${employee.name}`} onClick={(event) => { event.stopPropagation(); navigate(`/admin/employees/${employee.id}`) }}><ArrowUpRight size={15} /></button></td></tr>)}</tbody></table></div></div>
+  const user = useAuthStore((state) => state.user)
+  return <div className="panel table-panel"><SectionHeader title="Team pulse" action={<button className="text-button" onClick={() => navigate(rolePath(user.role, 'employees'))}>View all employees <ArrowUpRight size={15} /></button>} /><div className="table-scroll"><table><thead><tr><th>Employee</th><th>Department</th><th>Score</th><th>Prediction</th><th>Last evaluation</th><th /></tr></thead><tbody>{employees.slice(0, 5).map((employee) => { const path = rolePath(user.role, `employees/${employee.id}`); return <tr key={employee.id} onClick={() => navigate(path)} className="clickable-row"><td><div className="person-cell"><span className="avatar small">{employee.avatar}</span><span><strong>{employee.name}</strong><small>{employee.role}</small></span></div></td><td>{employee.department}</td><td><strong>{employee.score}</strong><span className="score-max">/100</span></td><td><StatusBadge status={employee.status} /></td><td>{formatDate(employee.latestEvaluation?.date)}</td><td><button className="icon-button" aria-label={`Open ${employee.name}`} onClick={(event) => { event.stopPropagation(); navigate(path) }}><ArrowUpRight size={15} /></button></td></tr> })}</tbody></table></div></div>
 }
 
 function StaffDashboard() {
@@ -238,7 +266,72 @@ function Employees() {
 
 function EmployeeRow({ employee }) {
   const navigate = useNavigate()
-  return <tr onClick={() => navigate(`/admin/employees/${employee.id}`)} className="clickable-row"><td><div className="person-cell"><span className="avatar small">{employee.avatar}</span><span><strong>{employee.name}</strong><small>{employee.employee_code} · {employee.roleLabel}</small></span></div></td><td>{employee.roleLabel}</td><td><div className="score-cell"><strong>{employee.score}</strong><div className="mini-bar"><i style={{ width: `${employee.score}%` }} /></div></div></td><td><StatusBadge status={employee.status} /></td><td>{formatDate(employee.latestEvaluation?.date)}</td><td><button className="icon-button" aria-label={`Open ${employee.name}`} onClick={(event) => { event.stopPropagation(); navigate(`/admin/employees/${employee.id}`) }}><ArrowUpRight size={15} /></button></td></tr>
+  const user = useAuthStore((state) => state.user)
+  const path = rolePath(user.role, `employees/${employee.id}`)
+  return <tr onClick={() => navigate(path)} className="clickable-row"><td><div className="person-cell"><span className="avatar small">{employee.avatar}</span><span><strong>{employee.name}</strong><small>{employee.employee_code} · {employee.roleLabel}</small></span></div></td><td>{employee.roleLabel}</td><td><div className="score-cell"><strong>{employee.score}</strong><div className="mini-bar"><i style={{ width: `${employee.score}%` }} /></div></div></td><td><StatusBadge status={employee.status} /></td><td>{formatDate(employee.latestEvaluation?.date)}</td><td><button className="icon-button" aria-label={`Open ${employee.name}`} onClick={(event) => { event.stopPropagation(); navigate(path) }}><ArrowUpRight size={15} /></button></td></tr>
+}
+
+function MyTeam() {
+  const navigate = useNavigate()
+  const user = useAuthStore((state) => state.user)
+  const resource = useApiResource(getEmployees)
+  const employees = resource.data || []
+  return <><div className="page-heading"><div><p className="eyebrow">TEAM WORKSPACE</p><h2>My Team</h2><p className="muted">Employees assigned to you as Team Leader.</p></div></div><div className="panel table-panel"><QueryState loading={resource.loading} error={resource.error} onRetry={resource.retry} empty={Boolean(resource.data && employees.length === 0)} emptyMessage="No employees are assigned to your team yet."><div className="table-scroll"><table><thead><tr><th>Employee</th><th>Position</th><th>Department</th><th>Status</th><th /></tr></thead><tbody>{employees.map((employee) => <tr key={employee.id} className="clickable-row" onClick={() => navigate(rolePath(user.role, `employees/${employee.id}`))}><td><div className="person-cell"><span className="avatar small">{initials(employee.name)}</span><span><strong>{employee.name}</strong><small>{employee.employee_code}</small></span></div></td><td>{employee.position}</td><td>{employee.department}</td><td><StatusBadge status={employee.status} /></td><td><ArrowUpRight size={15} /></td></tr>)}</tbody></table></div></QueryState></div></>
+}
+
+function UserAccounts() {
+  const user = useAuthStore((state) => state.user)
+  const roleOptions = accountRoleOptions[user.role] || accountRoleOptions.management
+  const resource = useApiResource(getUserAccounts)
+  const [creating, setCreating] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [editingId, setEditingId] = useState(null)
+  const [editingRole, setEditingRole] = useState('')
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+
+  const saveAccount = async (id, changes) => {
+    setSaving(true)
+    setError('')
+    setMessage('')
+    try {
+      await updateUserAccount(id, changes)
+      setEditingId(null)
+      setMessage('Account updated.')
+      resource.retry()
+    } catch (requestError) {
+      const details = requestError.response?.data
+      setError(details?.detail || Object.values(details || {}).flat().join(' ') || 'Unable to update account.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const createAccount = async (account) => {
+    setSaving(true)
+    setError('')
+    setMessage('')
+    try {
+      await createUserAccount(account)
+      setCreating(false)
+      setMessage('Account created.')
+      resource.retry()
+    } catch (requestError) {
+      const details = requestError.response?.data
+      setError(details?.detail || Object.values(details || {}).flat().join(' ') || 'Unable to create account.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const accounts = resource.data || []
+  return <><div className="page-heading"><div><p className="eyebrow">ACCESS MANAGEMENT</p><h2>User accounts</h2><p className="muted">Create accounts and manage roles and access status.</p></div><button className="primary-button" onClick={() => { setError(''); setCreating(true) }}><Plus size={17} /> Create account</button></div>{message && <div className="inline-feedback" role="status">{message}</div>}{error && !creating && <div className="form-error" role="alert">{error}</div>}<div className="panel table-panel"><QueryState loading={resource.loading} error={resource.error} onRetry={resource.retry} empty={Boolean(resource.data && accounts.length === 0)} emptyMessage="No user accounts found."><div className="table-scroll"><table><thead><tr><th>Account</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>{accounts.map((account) => { const editable = editingId === account.id; const role = accountRoleGroup(account.role); const self = account.id === user.id; return <tr key={account.id}><td><div className="person-cell"><span className="avatar small">{initials(account.name)}</span><span><strong>{account.name}</strong><small>{account.email}</small></span></div></td><td>{editable ? <select className="secondary-button" value={editingRole} onChange={(event) => setEditingRole(event.target.value)}>{roleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select> : employeeRoleLabel(account.role)}</td><td><StatusBadge status={account.is_active ? 'Active' : 'Inactive'} /></td><td><div className="profile-actions">{editable ? <><button className="primary-button" disabled={saving || self} onClick={() => saveAccount(account.id, { role: editingRole })}>Save role</button><button className="secondary-button" onClick={() => setEditingId(null)}>Cancel</button></> : <><button className="secondary-button" disabled={self || account.role === 'admin'} onClick={() => { setEditingRole(roleOptions.some(([value]) => value === role) ? role : roleOptions[0][0]); setEditingId(account.id) }}>Edit role</button><button className="secondary-button" disabled={saving || self || account.role === 'admin'} onClick={() => saveAccount(account.id, { is_active: !account.is_active })}>{account.is_active ? 'Deactivate' : 'Activate'}</button></>}</div></td></tr> })}</tbody></table></div></QueryState></div>{creating && <Modal title="Create user account" onClose={() => { setCreating(false); setError('') }}><UserAccountForm roleOptions={roleOptions} onCancel={() => { setCreating(false); setError('') }} onSubmit={createAccount} loading={saving} error={error} /></Modal>}</>
+}
+
+function UserAccountForm({ roleOptions, onCancel, onSubmit, loading, error }) {
+  const [values, setValues] = useState({ name: '', email: '', password: '', role: roleOptions[0]?.[0] || 'staff' })
+  const update = (key, value) => setValues((current) => ({ ...current, [key]: value }))
+  return <form className="modal-form" onSubmit={(event) => { event.preventDefault(); onSubmit(values) }}><label>Full name<input required maxLength="160" value={values.name} onChange={(event) => update('name', event.target.value)} /></label><label>Email<input type="email" required value={values.email} onChange={(event) => update('email', event.target.value)} /></label><label>Password<input type="password" autoComplete="new-password" minLength="8" required value={values.password} onChange={(event) => update('password', event.target.value)} /></label><label>Role<select value={values.role} onChange={(event) => update('role', event.target.value)}>{roleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>{error && <p className="form-error" role="alert">{error}</p>}<div className="form-actions"><button type="button" className="secondary-button" onClick={onCancel}>Cancel</button><button type="submit" className="primary-button" disabled={loading}>{loading ? 'Creating...' : 'Create account'}</button></div></form>
 }
 
 function EmployeeForm({ onCancel, onSubmit, loading = false, error = '', initial = {} }) {
@@ -260,6 +353,9 @@ function EmployeeForm({ onCancel, onSubmit, loading = false, error = '', initial
 
 function EmployeeProfile() {
   const { id } = useParams()
+  const user = useAuthStore((state) => state.user)
+  const canEdit = user.role === 'admin' || managementRoles.includes(user.role) || user.role === 'team_leader'
+  const canEvaluate = managementRoles.includes(user.role) || user.role === 'team_leader'
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
@@ -283,28 +379,41 @@ function EmployeeProfile() {
       setSaving(false)
     }
   }
-  return <QueryState loading={resource.loading} error={resource.error} onRetry={resource.retry}><><NavLink to="/admin/employees" className="back-link">← Back to employees</NavLink><div className="profile-heading"><div className="profile-person"><span className="avatar xl">{resource.data.employee.avatar}</span><div><p className="eyebrow">{resource.data.employee.employee_code}</p><h2>{resource.data.employee.name}</h2><p>{resource.data.employee.position} · {resource.data.employee.department}</p></div></div><div className="profile-actions"><button className="secondary-button" onClick={() => setEditing(true)}><Settings size={16} /> Edit profile</button><NavLink to="/admin/evaluations" className="primary-button"><Plus size={16} /> New evaluation</NavLink></div></div><div className="stats-grid three"><StatCard label="Performance score" value={`${resource.data.employee.score} / 100`} detail="Latest evaluation" icon={BarChart3} /><StatCard label="Predicted category" value={resource.data.employee.status} detail="Latest available prediction" tone="blue" icon={Sparkles} /><StatCard label="Last evaluation" value={formatDate(resource.data.employee.latestEvaluation?.date)} detail={resource.data.latestEvaluation ? `Evaluator #${resource.data.latestEvaluation.evaluator_id}` : 'No evaluation'} tone="purple" icon={ClipboardCheck} /></div><div className="dashboard-grid"><div className="panel evaluation-card"><SectionHeader title="Performance overview" action={<StatusBadge status={resource.data.employee.status} />} /><div className="evaluation-score"><strong>{resource.data.employee.score}</strong><span>/100</span></div><p>{resource.data.employee.latestEvaluation?.comments || 'No comments were included in the latest evaluation.'}</p></div><div className="panel prediction-panel"><SectionHeader title="Prediction history" action={<NavLink className="text-button" to="/admin/predictions">Open predictions <ArrowUpRight size={14} /></NavLink>} /><p className="muted">{resource.data.predictions[0]?.predicted_category || 'No prediction has been run yet.'}</p></div></div>{editing && <Modal title="Edit employee" onClose={() => setEditing(false)}><EmployeeForm initial={resource.data.employee} onCancel={() => setEditing(false)} onSubmit={submitUpdate} loading={saving} error={saveError} /></Modal>}</></QueryState>
+  return <QueryState loading={resource.loading} error={resource.error} onRetry={resource.retry}><><NavLink to={rolePath(user.role, user.role === 'team_leader' ? 'team' : 'employees')} className="back-link">← Back to employees</NavLink><div className="profile-heading"><div className="profile-person"><span className="avatar xl">{resource.data.employee.avatar}</span><div><p className="eyebrow">{resource.data.employee.employee_code}</p><h2>{resource.data.employee.name}</h2><p>{resource.data.employee.position} · {resource.data.employee.department}</p></div></div><div className="profile-actions">{canEdit && <button className="secondary-button" onClick={() => setEditing(true)}><Settings size={16} /> Edit profile</button>}{canEvaluate && <NavLink to={rolePath(user.role, 'evaluations')} className="primary-button"><Plus size={16} /> New evaluation</NavLink>}</div></div><div className="stats-grid three"><StatCard label="Performance score" value={`${resource.data.employee.score} / 100`} detail="Latest evaluation" icon={BarChart3} /><StatCard label="Predicted category" value={resource.data.employee.status} detail="Latest available prediction" tone="blue" icon={Sparkles} /><StatCard label="Last evaluation" value={formatDate(resource.data.employee.latestEvaluation?.date)} detail={resource.data.latestEvaluation ? `Evaluator #${resource.data.latestEvaluation.evaluator_id}` : 'No evaluation'} tone="purple" icon={ClipboardCheck} /></div><div className="dashboard-grid"><div className="panel evaluation-card"><SectionHeader title="Performance overview" action={<StatusBadge status={resource.data.employee.status} />} /><div className="evaluation-score"><strong>{resource.data.employee.score}</strong><span>/100</span></div><p>{resource.data.employee.latestEvaluation?.comments || 'No comments were included in the latest evaluation.'}</p></div><div className="panel prediction-panel"><SectionHeader title="Prediction history" action={<NavLink className="text-button" to={rolePath(user.role, 'predictions')}>Open predictions <ArrowUpRight size={14} /></NavLink>} /><p className="muted">{resource.data.predictions[0]?.predicted_category || 'No prediction has been run yet.'}</p></div></div>{editing && <Modal title="Edit employee" onClose={() => setEditing(false)}><EmployeeForm initial={resource.data.employee} onCancel={() => setEditing(false)} onSubmit={submitUpdate} loading={saving} error={saveError} /></Modal>}</></QueryState>
 }
 
 function Evaluations() {
   const user = useAuthStore((state) => state.user)
-  const own = user.role === 'staff'
+  const own = staffRoles.includes(user.role)
   const [modal, setModal] = useState(false)
   const [selected, setSelected] = useState(null)
+  const [editing, setEditing] = useState(false)
+  const [department, setDepartment] = useState('')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
+  const [hybridRating, setHybridRating] = useState('')
   const resource = useApiResource(async () => {
-    const [evaluations, employees] = await Promise.all([getEvaluations(), getEmployees()])
-    return { evaluations, employees }
-  })
+    const [evaluations, employees, criteria] = await Promise.all([
+      getEvaluations(undefined, { department, start_date: startDate, end_date: endDate, status: statusFilter, limit: 200 }),
+      getEmployees({ limit: 200 }),
+      fetchEvaluationCriteria(),
+    ])
+    return { evaluations, employees, criteria }
+  }, [department, startDate, endDate, statusFilter])
   if (resource.loading || resource.error) return <><div className="page-heading"><div><p className="eyebrow">PERFORMANCE REVIEWS</p><h2>{own ? 'My evaluations' : 'Evaluations'}</h2></div></div><QueryState loading={resource.loading} error={resource.error} onRetry={resource.retry} /></>
   if (!resource.data) return <QueryState loading error="Loading evaluations..." onRetry={resource.retry} />
   const submit = async (evaluation) => {
     setSaving(true)
     setSaveError('')
     try {
-      await createEvaluation(evaluation)
+      if (editing && selected) await updateEvaluation(selected.id, evaluation)
+      else await createEvaluation(evaluation)
       setModal(false)
+      setEditing(false)
+      setSelected(null)
       resource.retry()
     } catch (error) {
       setSaveError(error.response?.data?.detail || 'Unable to create evaluation.')
@@ -312,8 +421,32 @@ function Evaluations() {
       setSaving(false)
     }
   }
+  const remove = async () => {
+    if (!selected || !window.confirm('Delete this evaluation? This action cannot be undone.')) return
+    try {
+      await deleteEvaluation(selected.id)
+      setSelected(null)
+      resource.retry()
+    } catch (error) {
+      setSaveError(error.response?.data?.detail || 'Unable to delete evaluation.')
+    }
+  }
+  const saveHybridRating = async (event) => {
+    event.preventDefault()
+    setSaveError('')
+    try {
+      const field = user.role === 'team_leader' ? 'team_leader_rating' : 'management_rating'
+      const updated = await submitHybridReview(selected.id, { [field]: Number(hybridRating) })
+      setSelected((current) => ({ ...current, ...updated }))
+      setHybridRating('')
+      resource.retry()
+    } catch (error) {
+      setSaveError(error.response?.data?.detail || 'Unable to save hybrid review.')
+    }
+  }
   const empty = resource.data && resource.data.evaluations.length === 0
-  return <><div className="page-heading"><div><p className="eyebrow">PERFORMANCE REVIEWS</p><h2>{own ? 'My evaluations' : 'Evaluations'}</h2><p className="muted">{own ? 'Review your feedback and growth signals.' : 'Create and review employee evaluations.'}</p></div>{!own && <button className="primary-button" onClick={() => setModal(true)}><Plus size={17} /> Create evaluation</button>}</div><div className="panel list-panel"><QueryState loading={resource.loading} error={resource.error} onRetry={resource.retry} empty={Boolean(empty)} emptyMessage="No evaluations have been recorded yet."><div className="list-tabs"><span className="active">All evaluations <span>{resource.data.evaluations.length}</span></span></div>{resource.data.evaluations.map((item) => <EvaluationRow key={item.id} item={item} employee={resource.data.employees.find((row) => row.id === item.employee_id)} onClick={() => setSelected(item)} />)}</QueryState></div>{modal && <Modal title="Create evaluation" onClose={() => setModal(false)}><EvaluationForm employees={resource.data?.employees || []} onCancel={() => setModal(false)} onSubmit={submit} loading={saving} error={saveError} /></Modal>}{selected && <Modal title={`Evaluation · ${formatDate(selected.date)}`} onClose={() => setSelected(null)}><div className="detail-content"><p>{selected.comments || 'No comments were included.'}</p><div className="metric-list wide">{[['Productivity', selected.productivity_score], ['Attendance', selected.attendance_score], ['Quality', selected.quality_score], ['Teamwork', selected.teamwork_score], ['Communication', selected.communication_score]].map(([label, value]) => <div key={label}><span>{label}</span><div className="mini-bar"><i style={{ width: `${value}%` }} /></div><strong>{value}</strong></div>)}</div></div></Modal>}</>
+  const canHybridReview = managementRoles.includes(user.role) || user.role === 'team_leader'
+  return <><div className="page-heading"><div><p className="eyebrow">PERFORMANCE REVIEWS</p><h2>{own ? 'My evaluations' : 'Evaluations'}</h2><p className="muted">{own ? 'Review your feedback and growth signals.' : 'Create and review employee evaluations.'}</p></div>{!own && <div className="profile-actions"><NavLink className="secondary-button" to={rolePath(user.role, 'evaluation-criteria')}>Manage criteria</NavLink><button className="primary-button" onClick={() => { setEditing(false); setModal(true) }}><Plus size={17} /> Create evaluation</button></div>}</div><div className="panel settings-form"><div className="form-grid"><label>Department<select value={department} onChange={(event) => setDepartment(event.target.value)}><option value="">All departments</option>{[...new Set((resource.data?.employees || []).map((employee) => employee.department))].sort().map((name) => <option key={name}>{name}</option>)}</select></label><label>From<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label><label>Through<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label><label>Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All statuses</option><option value="completed">Completed</option><option value="pending">Pending</option><option value="draft">Draft</option></select></label></div></div><div className="panel list-panel"><QueryState loading={resource.loading} error={resource.error} onRetry={resource.retry} empty={Boolean(empty)} emptyMessage="No evaluations match these filters."><div className="list-tabs"><span className="active">Evaluations <span>{resource.data.evaluations.length}</span></span></div>{resource.data.evaluations.map((item) => <EvaluationRow key={item.id} item={item} employee={resource.data.employees.find((row) => row.id === item.employee_id)} onClick={() => { setSelected(item); setHybridRating(''); setSaveError('') }} />)}</QueryState></div>{modal && <Modal title={editing ? 'Edit evaluation' : 'Create evaluation'} onClose={() => { setModal(false); setEditing(false) }}><EvaluationForm initial={editing ? selected : null} employees={resource.data?.employees || []} criteria={resource.data?.criteria || {}} onCancel={() => { setModal(false); setEditing(false) }} onSubmit={submit} loading={saving} error={saveError} /></Modal>}{selected && <Modal title={`Evaluation · ${formatDate(selected.date)}`} onClose={() => setSelected(null)}><div className="detail-content"><p>{selected.comments || 'No comments were included.'}</p><p className="muted">Status: {selected.phase || selected.status || 'Completed'} · Hybrid score: {selected.hybrid_score ?? 'Not scored'}</p><div className="metric-list wide">{[['productivity_score', selected.productivity_score], ['attendance_score', selected.attendance_score], ['quality_score', selected.quality_score], ['teamwork_score', selected.teamwork_score], ['communication_score', selected.communication_score]].map(([key, value]) => <div key={key}><span>{resource.data?.criteria[key] || key}</span><div className="mini-bar"><i style={{ width: `${Math.max(0, Math.min(100, Number(value || 0)))}%` }} /></div><strong>{value ?? '—'}</strong></div>)}</div>{canHybridReview && <form className="modal-form" onSubmit={saveHybridRating}><label>{user.role === 'team_leader' ? 'Team Leader rating' : 'Management rating'}<input type="number" min="0" max="100" step="0.01" required value={hybridRating} onChange={(event) => setHybridRating(event.target.value)} /></label><button className="primary-button">Save hybrid review</button></form>}{saveError && <p className="form-error" role="alert">{saveError}</p>}<div className="form-actions">{[...managementRoles, 'team_leader'].includes(user.role) && <button className="secondary-button" onClick={() => { setEditing(true); setModal(true) }}>Edit evaluation</button>}{managementRoles.includes(user.role) && <button className="secondary-button" onClick={remove}>Delete evaluation</button>}</div></div></Modal>}</>
 }
 
 function EvaluationRow({ item, employee, onClick }) {
@@ -321,17 +454,17 @@ function EvaluationRow({ item, employee, onClick }) {
   return <button className="evaluation-row evaluation-row-button" onClick={onClick}><span className="avatar small">{initials(employee?.name)}</span><div className="evaluation-row-main"><div><strong>{formatDate(item.date)}</strong><span>{employee?.name || `Employee #${item.employee_id}`} · Evaluator #{item.evaluator_id}</span></div><p>{item.comments || 'No comments provided.'}</p></div><div className="row-score"><strong>{Math.round(score)}</strong><small>/100</small></div><StatusBadge status={categoryForScore(score)} /><MoreHorizontal size={17} /></button>
 }
 
-function EvaluationForm({ employees, onCancel, onSubmit, loading = false, error = '' }) {
-  const [employeeId, setEmployeeId] = useState(employees[0]?.id || '')
-  const [comments, setComments] = useState('')
-  const [values, setValues] = useState({ productivity_score: 80, attendance_score: 80, quality_score: 80, teamwork_score: 80, communication_score: 80 })
+function EvaluationForm({ employees, initial, criteria, onCancel, onSubmit, loading = false, error = '' }) {
+  const [employeeId, setEmployeeId] = useState(initial?.employee_id || employees[0]?.id || '')
+  const [comments, setComments] = useState(initial?.comments || '')
+  const [values, setValues] = useState(() => Object.fromEntries(['productivity_score', 'attendance_score', 'quality_score', 'teamwork_score', 'communication_score'].map((field) => [field, initial?.[field] ?? 80])))
   const update = (key, value) => setValues((current) => ({ ...current, [key]: Number(value) }))
-  return <form className="modal-form" onSubmit={(event) => { event.preventDefault(); onSubmit({ employee_id: Number(employeeId), date: new Date().toISOString().slice(0, 10), ...values, comments }) }}><label>Employee<select required value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name} · {employee.employee_code}</option>)}</select></label>{Object.entries(values).map(([key, value]) => <label className="range-field" key={key}>{key.replace('_score', '').replaceAll('_', ' ')}<output>{value}</output><input type="range" min="0" max="100" value={value} onChange={(event) => update(key, event.target.value)} /></label>)}<label>Comments<textarea value={comments} onChange={(event) => setComments(event.target.value)} rows="3" /></label>{error && <p className="form-error" role="alert">{error}</p>}<div className="form-actions"><button type="button" className="secondary-button" onClick={onCancel}>Cancel</button><button type="submit" className="primary-button" disabled={loading || employees.length === 0}>{loading ? 'Publishing...' : 'Publish evaluation'}</button></div></form>
+  return <form className="modal-form" onSubmit={(event) => { event.preventDefault(); onSubmit({ employee_id: Number(employeeId), date: initial?.date || new Date().toISOString().slice(0, 10), ...values, comments }) }}><label>Employee<select required value={employeeId} disabled={Boolean(initial)} onChange={(event) => setEmployeeId(event.target.value)}>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name} · {employee.employee_code}</option>)}</select></label>{Object.entries(values).map(([key, value]) => <label className="range-field" key={key}>{criteria[key] || key.replace('_score', '').replaceAll('_', ' ')}<output>{value}</output><input type="range" min="0" max="100" value={value} onChange={(event) => update(key, event.target.value)} /></label>)}<label>Comments<textarea value={comments} onChange={(event) => setComments(event.target.value)} rows="3" /></label>{error && <p className="form-error" role="alert">{error}</p>}<div className="form-actions"><button type="button" className="secondary-button" onClick={onCancel}>Cancel</button><button type="submit" className="primary-button" disabled={loading || employees.length === 0}>{loading ? 'Saving...' : initial ? 'Save evaluation' : 'Publish evaluation'}</button></div></form>
 }
 
 function Predictions() {
   const user = useAuthStore((state) => state.user)
-  const own = user.role === 'staff'
+  const own = staffRoles.includes(user.role)
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('')
   const [selectedPrediction, setSelectedPrediction] = useState(null)
   const [running, setRunning] = useState(false)
@@ -479,8 +612,8 @@ function SettingsPage() {
   ]
 
   return <><div className="page-heading"><div><p className="eyebrow">WORKSPACE PREFERENCES</p><h2>Settings</h2><p className="muted">Manage your profile, notifications, and account security.</p></div></div><div className="settings-layout"><div className="settings-nav" role="tablist" aria-label="Settings"><button type="button" role="tab" aria-selected={tab === 'profile'} className={tab === 'profile' ? 'active' : ''} onClick={() => setTab('profile')}><UserRound size={16} /> Profile</button><button type="button" role="tab" aria-selected={tab === 'notifications'} className={tab === 'notifications' ? 'active' : ''} onClick={() => setTab('notifications')}><Bell size={16} /> Notifications</button><button type="button" role="tab" aria-selected={tab === 'security'} className={tab === 'security' ? 'active' : ''} onClick={() => setTab('security')}><ShieldCheck size={16} /> Security</button></div><div className="settings-tab-content">
-    {tab === 'profile' && <section className="panel settings-form" role="tabpanel"><SectionHeader title="Profile information" action={<span className="subtle-label">{roleLabels[user.role]}</span>} /><QueryState loading={profileResource.loading} error={profileResource.error} onRetry={profileResource.retry}><form onSubmit={saveProfile}><div className="form-avatar"><span className="avatar xl">{initials(profileValues.name)}</span></div><div className="form-grid"><label>Full name<input required minLength="1" maxLength="160" value={profileValues.name} onChange={(event) => setProfileValues((current) => ({ ...current, name: event.target.value }))} /></label><label>Email address<input required type="email" value={profileValues.email} onChange={(event) => setProfileValues((current) => ({ ...current, email: event.target.value }))} /></label><label>Role<input value={roleLabels[user.role]} readOnly /></label></div><button type="submit" className="primary-button" disabled={profileSaving}>{profileSaving ? 'Saving...' : 'Save changes'}</button></form></QueryState></section>}
-    {tab === 'security' && <section className="panel settings-form" role="tabpanel"><SectionHeader title="Change password" action={<span className="subtle-label">Password update</span>} /><form className="security-form" onSubmit={savePassword}><label>Current password<input type="password" autoComplete="current-password" required value={passwords.current_password} onChange={(event) => setPasswords((current) => ({ ...current, current_password: event.target.value }))} /></label><label>New password<input type="password" autoComplete="new-password" minLength="8" required value={passwords.new_password} onChange={(event) => setPasswords((current) => ({ ...current, new_password: event.target.value }))} /></label><label>Confirm new password<input type="password" autoComplete="new-password" minLength="8" required value={passwords.confirm_password} onChange={(event) => setPasswords((current) => ({ ...current, confirm_password: event.target.value }))} /></label><p className="muted">Use at least 8 characters.</p><button type="submit" className="primary-button" disabled={passwordSaving}>{passwordSaving ? 'Updating...' : 'Update password'}</button></form></section>}
+    {tab === 'profile' && <section className="panel settings-form" role="tabpanel"><SectionHeader title="Profile information" action={<span className="subtle-label">{roleLabels[user.role]}</span>} /><QueryState loading={profileResource.loading} error={profileResource.error} onRetry={profileResource.retry}><form onSubmit={saveProfile}><ProfilePhotoControl /><div className="form-grid"><label>Full name<input required minLength="1" maxLength="160" value={profileValues.name} onChange={(event) => setProfileValues((current) => ({ ...current, name: event.target.value }))} /></label><label>Email address<input required type="email" value={profileValues.email} onChange={(event) => setProfileValues((current) => ({ ...current, email: event.target.value }))} /></label><label>Role<input value={roleLabels[user.role]} readOnly /></label></div><button type="submit" className="primary-button" disabled={profileSaving}>{profileSaving ? 'Saving...' : 'Save changes'}</button></form></QueryState></section>}
+    {tab === 'security' && <><section className="panel settings-form" role="tabpanel"><SectionHeader title="Change password" action={<span className="subtle-label">Password update</span>} /><form className="security-form" onSubmit={savePassword}><label>Current password<input type="password" autoComplete="current-password" required value={passwords.current_password} onChange={(event) => setPasswords((current) => ({ ...current, current_password: event.target.value }))} /></label><label>New password<input type="password" autoComplete="new-password" minLength="8" required value={passwords.new_password} onChange={(event) => setPasswords((current) => ({ ...current, new_password: event.target.value }))} /></label><label>Confirm new password<input type="password" autoComplete="new-password" minLength="8" required value={passwords.confirm_password} onChange={(event) => setPasswords((current) => ({ ...current, confirm_password: event.target.value }))} /></label><p className="muted">Use at least 8 characters.</p><button type="submit" className="primary-button" disabled={passwordSaving}>{passwordSaving ? 'Updating...' : 'Update password'}</button></form></section><TrustedDevicesPanel /></>}
     {tab === 'notifications' && <section className="panel settings-form" role="tabpanel"><SectionHeader title="Notification preferences" action={<span className="subtle-label">Saved to your account</span>} /><QueryState loading={preferencesResource.loading} error={preferencesResource.error} onRetry={preferencesResource.retry}><div className="preference-list">{preferenceItems.map(({ key, title, description }) => <label className="preference-row" key={key}><span><strong>{title}</strong><small>{description}</small></span><input type="checkbox" role="switch" checked={Boolean(preferences[key])} disabled={Boolean(savingPreference)} onChange={(event) => togglePreference(key, event.target.checked)} aria-label={title} /></label>)}</div></QueryState></section>}
   </div></div>{toast && <div className={`toast settings-toast ${toast.type}`} role={toast.type === 'error' ? 'alert' : 'status'}>{toast.type === 'success' ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}{toast.message}<button type="button" className="icon-button" aria-label="Dismiss notification" onClick={() => setToast(null)}><X size={14} /></button></div>}</>
 }
@@ -494,7 +627,9 @@ function RequireAuth({ children, roles }) {
 
 function RoleRoutes({ role }) {
   const attendanceRoles = ['admin', 'management', 'hr_manager', 'team_leader', 'staff', 'employee']
-  return <RequireAuth roles={[role]}><Shell><Routes><Route path="overview" element={<Dashboard />} />{role === 'admin' && <><Route path="employees" element={<Employees />} /><Route path="employees/:id" element={<EmployeeProfile />} /><Route path="reports" element={<Reports />} /><Route path="office-locations" element={<OfficeLocationsPage />} /></>}{attendanceRoles.includes(role) && <><Route path="attendance" element={<AttendancePage />} /><Route path="notifications" element={<NotificationsPage />} /></>}{role !== 'client' && <><Route path="evaluations" element={<Evaluations />} /><Route path="predictions" element={<Predictions />} /></>}<Route path="settings" element={<SettingsPage />} /><Route path="*" element={<Navigate to="overview" replace />} /></Routes></Shell></RequireAuth>
+  const isManager = managementRoles.includes(role)
+  const isTeam = [...managementRoles, 'team_leader'].includes(role)
+  return <RequireAuth roles={[role]}><Shell><Routes><Route path="overview" element={role === 'team_leader' ? <Navigate to={rolePath(role, 'team')} replace /> : <Dashboard />} />{isManager && <><Route path="employees" element={<Employees />} /><Route path="employees/:id" element={<EmployeeProfile />} /><Route path="accounts" element={<UserAccounts />} /><Route path="automation" element={<AutomationSettingsPage />} /><Route path="evaluation-criteria" element={<EvaluationCriteriaPage />} /></>}{isTeam && <Route path="reports" element={<ReportsPage />} />}{isTeam && <Route path="compose-notification" element={<NotificationComposerPage />} />}{role === 'admin' && <Route path="office-locations" element={<OfficeLocationsPage />} />}{role === 'team_leader' && <><Route path="team" element={<MyTeam />} /><Route path="employees/:id" element={<EmployeeProfile />} /></>}{attendanceRoles.includes(role) && <><Route path="attendance" element={<AttendancePage />} /><Route path="notifications" element={<NotificationsPage />} /></>}{role !== 'client' && <><Route path="submissions" element={<SubmissionsPage />} /><Route path="evaluations" element={<Evaluations />} /><Route path="evaluations/criteria" element={<EvaluationCriteriaPage />} /><Route path="predictions" element={<PredictionHistoryPage />} /></>}<Route path="settings" element={<SettingsPage />} /><Route path="*" element={<Navigate to={roleHome(role)} replace />} /></Routes></Shell></RequireAuth>
 }
 
 function AppConnected() {

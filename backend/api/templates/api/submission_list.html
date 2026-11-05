@@ -22,8 +22,8 @@
             <td class="px-5 py-4 font-medium text-lexie-ink">{{ submission.title }}</td>
             <td class="px-5 py-4 text-slate-600">{% if user.role == 'admin' or user.role == 'hr_manager' %}{{ submission.employee.name }}{% else %}You{% endif %}</td>
             <td class="px-5 py-4 text-slate-600">{{ submission.uploaded_at|date:"M d, Y" }} · {{ submission.uploaded_at|time:"h:i A" }}</td>
-            <td class="px-5 py-4"><span class="status-badge {% if submission.status == 'reviewed' %}success{% else %}warning{% endif %}">{{ submission.status|title }}</span></td>
-            <td class="px-5 py-4"><a href="{{ submission.file.url }}" target="_blank" rel="noopener noreferrer" class="text-lexie-teal hover:underline">Open file</a></td>
+            <td class="px-5 py-4"><span class="status-badge {% if submission.status == 'reviewed' %}success{% elif submission.status == 'rejected' %}error{% else %}warning{% endif %}">{% if submission.status == 'reviewed' %}Approved{% else %}{{ submission.status|title }}{% endif %}</span></td>
+            <td class="px-5 py-4"><a href="{% url 'submission-file' submission.pk %}" class="text-lexie-teal hover:underline">Open file</a></td>
             <td class="px-5 py-4">
               {% if can_review %}<a href="{% url 'submission-review' submission.pk %}" class="icon-button" aria-label="Review {{ submission.title }}"><i data-lucide="eye"></i></a>{% else %}—{% endif %}
             </td>

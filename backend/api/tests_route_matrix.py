@@ -1,6 +1,7 @@
 import re
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 from uuid import UUID
 
 from django.contrib.staticfiles import finders
@@ -238,6 +239,7 @@ class RoleRouteMatrixTests(APITestCase):
                 f"{user.role} {method} {path} rendered {error_name}",
             )
 
+    @patch.dict("os.environ", {"CRON_SECRET": "route-matrix-secret"})
     def test_every_configured_route_handles_get_and_invalid_post_for_each_role(self):
         routes = list(_leaf_routes())
         self.assertGreaterEqual(len(routes), 70)

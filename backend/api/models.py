@@ -88,6 +88,7 @@ class User(AbstractBaseUser, PermissionsMixin):
         null=True,
         help_text="JPG or PNG, maximum 2 MB.",
     )
+    photo_blob_path = models.CharField(max_length=1000, blank=True, default="")
     notification_preferences = models.JSONField(default=dict)
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     is_active = models.BooleanField(default=True)
@@ -384,11 +385,61 @@ class AttendanceCorrection(models.Model):
         return f"{self.record} correction by {self.changed_by}"
 
 
+class AttendanceCorrectionRequest(models.Model):
+    class Status(models.TextChoices):
+        pending = "pending", "Pending"
+        approved = "approved", "Approved"
+        rejected = "rejected", "Rejected"
+
+    record = models.ForeignKey(
+        AttendanceRecord,
+        on_delete=models.CASCADE,
+        related_name="correction_requests",
+    )
+    requested_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="attendance_correction_requests",
+    )
+    reviewed_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="attendance_correction_reviews",
+    )
+    reason = models.TextField()
+    requested_status = models.CharField(
+        max_length=16,
+        choices=AttendanceRecord.Status.choices,
+    )
+    requested_clock_in_at = models.DateTimeField(null=True, blank=True)
+    requested_clock_out_at = models.DateTimeField(null=True, blank=True)
+    change_status = models.BooleanField(default=False)
+    change_clock_in = models.BooleanField(default=False)
+    change_clock_out = models.BooleanField(default=False)
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.pending,
+    )
+    review_note = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("-created_at", "-pk")
+
+    def __str__(self):
+        return f"Correction request for {self.record} ({self.get_status_display()})"
+
+
 class Submission(models.Model):
     class Status(models.TextChoices):
         pending = "pending", "Pending"
         under_review = "under_review", "Under review"
         reviewed = "reviewed", "Reviewed"
+        rejected = "rejected", "Rejected"
 
     employee = models.ForeignKey(
         Employee,
@@ -397,7 +448,10 @@ class Submission(models.Model):
     )
     title = models.CharField(max_length=160)
     description = models.TextField(blank=True)
-    file = models.FileField(upload_to="submissions/%Y/%m/%d/")
+    file = models.FileField(upload_to="submissions/%Y/%m/%d/", blank=True)
+    blob_path = models.CharField(max_length=1000, blank=True, default="")
+    file_name = models.CharField(max_length=255, blank=True, default="")
+    file_content_type = models.CharField(max_length=160, blank=True, default="")
     uploaded_at = models.DateTimeField(auto_now_add=True)
     status = models.CharField(
         max_length=20,
@@ -571,6 +625,22 @@ class AutomationSettings(models.Model):
     class Meta:
         verbose_name = "automation settings"
         verbose_name_plural = "automation settings"
+
+
+class EvaluationCriteriaSettings(models.Model):
+    criteria = models.JSONField(default=dict)
+    updated_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="evaluation_criteria_updates",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "evaluation criteria settings"
+        verbose_name_plural = "evaluation criteria settings"
 
 
 class Notification(models.Model):

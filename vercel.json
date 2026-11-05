@@ -29,5 +29,11 @@
         "service": "app"
       }
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/automation/monthly-evaluations",
+      "schedule": "0 0 1 * *"
+    }
   ]
 }

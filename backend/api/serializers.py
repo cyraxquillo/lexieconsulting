@@ -4,6 +4,7 @@ from rest_framework import serializers
 from .models import (
     Client,
     Department,
+    AttendanceCorrectionRequest,
     Employee,
     Evaluation,
     OfficeLocation,
@@ -25,12 +26,134 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "created_at")
 
 
+class UserAccountSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ("id", "name", "email", "role", "is_active", "created_at")
+        read_only_fields = ("id", "created_at")
+
+
+class UserAccountCreateSerializer(serializers.Serializer):
+    name = serializers.CharField(min_length=1, max_length=160)
+    email = serializers.EmailField()
+    password = serializers.CharField(min_length=8, max_length=128, write_only=True)
+    role = serializers.ChoiceField(choices=())
+
+    def __init__(self, *args, allowed_roles, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["role"].choices = allowed_roles
+
+    def validate_email(self, value):
+        value = value.lower()
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("An account with this email already exists")
+        return value
+
+    def create(self, validated_data):
+        password = validated_data.pop("password")
+        return User.objects.create_user(
+            password=password,
+            is_active=True,
+            is_staff=False,
+            is_superuser=False,
+            **validated_data,
+        )
+
+
+class UserAccountUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ("name", "email", "role", "is_active")
+
+    def __init__(self, *args, allowed_roles, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["role"].choices = allowed_roles
+
+    def validate_email(self, value):
+        value = value.lower()
+        if User.objects.filter(email__iexact=value).exclude(pk=self.instance.pk).exists():
+            raise serializers.ValidationError("An account with this email already exists")
+        return value
+
+
+class AttendanceCorrectionRequestSerializer(serializers.ModelSerializer):
+    record_id = serializers.IntegerField(write_only=True)
+
+    class Meta:
+        model = AttendanceCorrectionRequest
+        fields = (
+            "id",
+            "record_id",
+            "requested_status",
+            "requested_clock_in_at",
+            "requested_clock_out_at",
+            "change_status",
+            "change_clock_in",
+            "change_clock_out",
+            "reason",
+            "status",
+            "review_note",
+            "created_at",
+            "reviewed_at",
+            "requested_by",
+            "reviewed_by",
+        )
+        read_only_fields = (
+            "id",
+            "status",
+            "review_note",
+            "created_at",
+            "reviewed_at",
+            "requested_by",
+            "reviewed_by",
+        )
+
+    def validate_reason(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("A correction reason is required.")
+        return value
+
+    def validate(self, attrs):
+        if not (
+            attrs.get("change_status")
+            or attrs.get("change_clock_in")
+            or attrs.get("change_clock_out")
+        ):
+            raise serializers.ValidationError(
+                "Choose at least one attendance detail to correct."
+            )
+        for field, selected in (
+            ("requested_clock_in_at", attrs.get("change_clock_in")),
+            ("requested_clock_out_at", attrs.get("change_clock_out")),
+        ):
+            if selected and attrs.get(field) is None:
+                raise serializers.ValidationError(
+                    {field: "Enter the corrected time or clear the change checkbox."}
+                )
+            if not selected and field in attrs:
+                attrs.pop(field)
+        return attrs
+
+
+class SubmissionReviewSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(
+        choices=(("reviewed", "Approved"), ("rejected", "Rejected"))
+    )
+    reviewer_comment = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=5000,
+    )
+
+
 class UserProfileSerializer(serializers.ModelSerializer):
     notification_preferences = serializers.DictField()
+    photo_url = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ("id", "name", "email", "role", "notification_preferences")
+        fields = ("id", "name", "email", "role", "notification_preferences", "photo_url")
         read_only_fields = ("id", "role")
 
     def to_representation(self, instance):
@@ -40,6 +163,11 @@ class UserProfileSerializer(serializers.ModelSerializer):
             **(instance.notification_preferences or {}),
         }
         return result
+
+    def get_photo_url(self, instance):
+        if instance.photo_blob_path or instance.photo:
+            return "/api/users/me/photo"
+        return ""
 
     def validate_email(self, value):
         return value.lower()
@@ -206,6 +334,7 @@ class EvaluationSerializer(serializers.ModelSerializer):
     employee_id = serializers.IntegerField()
     evaluator_id = serializers.IntegerField(read_only=True)
     overall_score = serializers.FloatField(read_only=True)
+    assigned_to_id = serializers.IntegerField(read_only=True, allow_null=True)
 
     class Meta:
         model = Evaluation
@@ -213,8 +342,14 @@ class EvaluationSerializer(serializers.ModelSerializer):
             "id", "employee_id", "evaluator_id", "date", "productivity_score",
             "attendance_score", "quality_score", "teamwork_score",
             "communication_score", "comments", "created_at", "overall_score",
+            "status", "phase", "cycle_month", "team_leader_rating",
+            "management_rating", "hybrid_score", "auto_score", "assigned_to_id",
         )
-        read_only_fields = ("id", "evaluator_id", "created_at", "overall_score")
+        read_only_fields = (
+            "id", "evaluator_id", "created_at", "overall_score", "status",
+            "phase", "cycle_month", "team_leader_rating", "management_rating",
+            "hybrid_score", "auto_score", "assigned_to_id",
+        )
 
     def validate_employee_id(self, value):
         if not Employee.objects.filter(pk=value).exists():
@@ -230,6 +365,26 @@ class EvaluationSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         return Evaluation.objects.create(evaluator=self.context["request"].user, **validated_data)
+
+    def update(self, instance, validated_data):
+        score_fields = (
+            "productivity_score",
+            "attendance_score",
+            "quality_score",
+            "teamwork_score",
+            "communication_score",
+        )
+        scores_changed = any(field in validated_data for field in score_fields)
+        instance = super().update(instance, validated_data)
+        if scores_changed:
+            instance.auto_score = None
+            instance.status = (
+                Evaluation.Status.completed
+                if all(getattr(instance, field) is not None for field in score_fields)
+                else Evaluation.Status.pending
+            )
+            instance.save(update_fields=("auto_score", "status"))
+        return instance
 
 
 class PredictionSerializer(serializers.ModelSerializer):

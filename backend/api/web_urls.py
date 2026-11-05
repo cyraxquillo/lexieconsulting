@@ -37,6 +37,11 @@ urlpatterns = [
         web_views.submission_review,
         name="submission-review",
     ),
+    path(
+        "submissions/<int:pk>/file/",
+        web_views.submission_file_download,
+        name="submission-file",
+    ),
     path("attendance/", views_hybrid.attendance_list, name="attendance-list"),
     path("attendance/time-in/", views_hybrid.attendance_time_in, name="attendance-time-in"),
     path("attendance/break/start/", views_hybrid.attendance_break_start, name="attendance-break-start"),

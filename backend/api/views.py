@@ -1,9 +1,13 @@
 from collections import defaultdict
+from datetime import date
 import logging
+import mimetypes
 
 from django.contrib.auth import authenticate
+from django.http import Http404, HttpResponse
 from django.db import IntegrityError, transaction
 from django.db.models import Q
+from django.utils.http import content_disposition_header
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -14,12 +18,23 @@ from .access import (
     MANAGEMENT_ROLES,
     TEAM_ROLES,
     VIEWER_ROLES,
+    can_review_submission,
     employee_queryset_for,
     evaluation_queryset_for,
     is_management,
+    is_staff_user,
+    managed_user_queryset,
     prediction_queryset_for,
+    submission_queryset_for,
 )
-from .models import Client, Department, Employee, Evaluation, Prediction, User
+from .blob_storage import (
+    ALLOWED_SUBMISSION_EXTENSIONS,
+    MAX_SUBMISSION_FILE_SIZE,
+    get_submission_blob,
+    sanitize_filename,
+    upload_submission_blob,
+)
+from .models import Client, Department, Employee, Evaluation, Prediction, Submission, User
 from .login_throttling import LoginRateThrottle
 from .permissions import IsAdmin, IsAdminOrManager, IsClient, IsManagementOrTeamLeader
 from .serializers import (
@@ -30,12 +45,133 @@ from .serializers import (
     NotificationPreferencesSerializer,
     PasswordUpdateSerializer,
     PredictionSerializer,
+    SubmissionReviewSerializer,
     UserCreateSerializer,
+    UserAccountCreateSerializer,
+    UserAccountSerializer,
+    UserAccountUpdateSerializer,
     UserProfileSerializer,
     UserSerializer,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def submission_data(submission):
+    return {
+        "id": submission.pk,
+        "employee_id": submission.employee_id,
+        "employee_name": submission.employee.name,
+        "title": submission.title,
+        "description": submission.description,
+        "file_name": submission.file_name or submission.file.name.rsplit("/", 1)[-1],
+        "file_content_type": submission.file_content_type,
+        "download_url": f"/api/submissions/{submission.pk}/file",
+        "uploaded_at": submission.uploaded_at.isoformat(),
+        "status": submission.status,
+        "reviewer_comment": submission.reviewer_comment,
+        "is_late": submission.is_late,
+    }
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def submissions(request):
+    if request.method == "GET":
+        if request.user.role not in VIEWER_ROLES:
+            return role_denied()
+        queryset = submission_queryset_for(request.user)
+        return Response([
+            submission_data(item)
+            for item in queryset.order_by("-uploaded_at", "-pk")[:200]
+        ])
+
+    if not is_staff_user(request.user):
+        return role_denied()
+    try:
+        employee = request.user.employee
+    except Employee.DoesNotExist:
+        return Response(
+            {"detail": "Your account is not linked to an employee profile."},
+            status=status.HTTP_409_CONFLICT,
+        )
+    uploaded_file = request.FILES.get("file")
+    title = str(request.data.get("title", "")).strip()
+    description = str(request.data.get("description", "")).strip()
+    if not title or len(title) > 160:
+        return Response({"title": ["Enter a title of 1 to 160 characters."]}, status=422)
+    if uploaded_file is None:
+        return Response({"file": ["Please select a file to upload."]}, status=422)
+    extension = "." + uploaded_file.name.rsplit(".", 1)[-1].lower() if "." in uploaded_file.name else ""
+    if extension not in ALLOWED_SUBMISSION_EXTENSIONS:
+        return Response(
+            {"file": ["Supported file types: PDF, DOC/DOCX, XLS/XLSX, PPT/PPTX, TXT, CSV, PNG, JPG."]},
+            status=422,
+        )
+    if uploaded_file.size > MAX_SUBMISSION_FILE_SIZE:
+        return Response({"file": ["The file must be 4 MB or smaller for Vercel serverless upload."]}, status=413)
+    try:
+        blob_path = upload_submission_blob(employee.pk, uploaded_file)
+    except RuntimeError as error:
+        logger.error("Submission storage is not configured: %s", error)
+        return Response({"detail": "Submission file storage is not configured."}, status=503)
+    except Exception:
+        logger.exception("Unable to upload work submission to Vercel Blob.")
+        return Response({"detail": "Unable to store the uploaded file. Please try again."}, status=502)
+
+    submission = Submission.objects.create(
+        employee=employee,
+        title=title,
+        description=description,
+        file="",
+        blob_path=blob_path,
+        file_name=sanitize_filename(uploaded_file.name),
+        file_content_type=uploaded_file.content_type or "application/octet-stream",
+        status=Submission.Status.pending,
+    )
+    return Response(submission_data(submission), status=status.HTTP_201_CREATED)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def submission_review(request, submission_id):
+    submission = submission_queryset_for(request.user).filter(pk=submission_id).first()
+    if submission is None or not can_review_submission(request.user, submission):
+        return Response({"detail": "Submission not found or you do not have permission to review it."}, status=404)
+    serializer = SubmissionReviewSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=422)
+    submission.status = serializer.validated_data["status"]
+    submission.reviewer_comment = serializer.validated_data.get("reviewer_comment", "").strip()
+    submission.save(update_fields=("status", "reviewer_comment"))
+    return Response(submission_data(submission))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def submission_file(request, submission_id):
+    submission = submission_queryset_for(request.user).filter(pk=submission_id).first()
+    if submission is None:
+        raise Http404
+    if submission.blob_path:
+        try:
+            result = get_submission_blob(submission.blob_path)
+        except Exception:
+            logger.exception("Unable to retrieve work submission %s from Vercel Blob.", submission.pk)
+            return Response({"detail": "Unable to retrieve the submission file."}, status=502)
+        content = result.body
+        content_type = submission.file_content_type or result.metadata.content_type or "application/octet-stream"
+        filename = submission.file_name or "submission"
+    elif submission.file:
+        content = submission.file.read()
+        filename = submission.file.name.rsplit("/", 1)[-1]
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    else:
+        raise Http404
+    response = HttpResponse(content, content_type=content_type)
+    response["Content-Disposition"] = content_disposition_header(True, filename)
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 def parse_pagination(request):
@@ -115,6 +251,88 @@ def register_user(request):
     except IntegrityError:
         return Response({"detail": "An account with this email already exists"}, status=409)
     return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
+
+
+def account_queryset_for(actor):
+    return managed_user_queryset(actor)
+
+
+def account_roles_for(actor):
+    if actor.role == User.Role.admin:
+        return (
+            User.Role.management,
+            User.Role.team_leader,
+            User.Role.staff,
+        )
+    return (User.Role.team_leader, User.Role.staff)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def user_accounts(request):
+    if not is_management(request.user):
+        return role_denied()
+    if request.method == "GET":
+        accounts = account_queryset_for(request.user).order_by("name", "pk")
+        return Response(UserAccountSerializer(accounts, many=True).data)
+
+    requested_role = request.data.get("role")
+    if requested_role and requested_role not in account_roles_for(request.user):
+        return role_denied()
+    serializer = UserAccountCreateSerializer(
+        data=request.data,
+        allowed_roles=account_roles_for(request.user),
+    )
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    try:
+        with transaction.atomic():
+            account = serializer.save()
+    except IntegrityError:
+        return Response(
+            {"detail": "An account with this email already exists"},
+            status=status.HTTP_409_CONFLICT,
+        )
+    return Response(
+        UserAccountSerializer(account).data,
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@api_view(["PUT", "PATCH"])
+@permission_classes([IsAuthenticated])
+def user_account_detail(request, account_id):
+    if not is_management(request.user):
+        return role_denied()
+    if account_id == request.user.pk:
+        return role_denied()
+    account = account_queryset_for(request.user).filter(pk=account_id).first()
+    if account is None:
+        if User.objects.filter(pk=account_id).exists():
+            return role_denied()
+        return Response({"detail": "Account not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    requested_role = request.data.get("role")
+    if requested_role and requested_role not in account_roles_for(request.user):
+        return role_denied()
+    if request.data.get("is_active") is False and account_id == request.user.pk:
+        return role_denied()
+    serializer = UserAccountUpdateSerializer(
+        account,
+        data=request.data,
+        partial=request.method == "PATCH",
+        allowed_roles=account_roles_for(request.user),
+    )
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    try:
+        serializer.save()
+    except IntegrityError:
+        return Response(
+            {"detail": "An account with this email already exists"},
+            status=status.HTTP_409_CONFLICT,
+        )
+    return Response(UserAccountSerializer(account).data)
 
 
 @api_view(["GET", "PUT"])
@@ -265,6 +483,24 @@ def evaluations(request):
                 queryset = queryset.filter(employee_id=int(employee_id))
             except ValueError:
                 return Response({"detail": "employee_id must be an integer"}, status=422)
+        department_id = request.query_params.get("department")
+        if department_id:
+            if department_id.isdigit():
+                queryset = queryset.filter(employee__department_id=int(department_id))
+            else:
+                queryset = queryset.filter(employee__department__name__iexact=department_id.strip())
+        for field, lookup in (("start_date", "date__gte"), ("end_date", "date__lte")):
+            value = request.query_params.get(field)
+            if value:
+                try:
+                    parsed = date.fromisoformat(value)
+                except ValueError:
+                    return Response({field: ["Use YYYY-MM-DD format."]}, status=422)
+                queryset = queryset.filter(**{lookup: parsed})
+        if request.query_params.get("status"):
+            queryset = queryset.filter(status=request.query_params["status"])
+        if request.query_params.get("phase"):
+            queryset = queryset.filter(phase=request.query_params["phase"])
         skip, limit, error = parse_pagination(request)
         if error:
             return error
@@ -320,6 +556,20 @@ def predictions(request):
             queryset = queryset.filter(employee_id=int(employee_id))
         except ValueError:
             return Response({"detail": "employee_id must be an integer"}, status=422)
+    department_id = request.query_params.get("department")
+    if department_id:
+        if department_id.isdigit():
+            queryset = queryset.filter(employee__department_id=int(department_id))
+        else:
+            queryset = queryset.filter(employee__department__name__iexact=department_id.strip())
+    for field, lookup in (("start_date", "created_at__date__gte"), ("end_date", "created_at__date__lte")):
+        value = request.query_params.get(field)
+        if value:
+            try:
+                parsed = date.fromisoformat(value)
+            except ValueError:
+                return Response({field: ["Use YYYY-MM-DD format."]}, status=422)
+            queryset = queryset.filter(**{lookup: parsed})
     skip, limit, error = parse_pagination(request)
     if error:
         return error

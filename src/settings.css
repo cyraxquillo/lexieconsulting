@@ -8,3 +8,4 @@
 .attendance-time-out>span{color:var(--muted);font-size:10px;text-align:center}
 .settings-form>.status-badge{margin:0 0 12px}
 @media(max-width:650px){.attendance-action-group{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.submission-review-controls{display:grid;min-width:190px;gap:8px}.submission-review-controls textarea{width:100%;resize:vertical;border:1px solid var(--line);border-radius:7px;padding:8px;color:var(--ink);font:inherit;font-size:12px}.submission-review-controls .profile-actions{display:flex;gap:6px}.submission-review-controls .primary-button,.submission-review-controls .secondary-button{padding:7px 10px;font-size:11px}td>small{display:block;margin-top:4px}

@@ -1,7 +1,10 @@
 import api from './api'
 
-export async function getPredictions(employeeId) {
-  const params = employeeId === undefined || employeeId === null ? {} : { employee_id: employeeId }
+export async function getPredictions(employeeId, options = {}) {
+  const params = {
+    ...(employeeId === undefined || employeeId === null ? {} : { employee_id: employeeId }),
+    ...options,
+  }
   const { data } = await api.get('/predictions', { params })
   return data
 }

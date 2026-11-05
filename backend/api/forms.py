@@ -383,20 +383,28 @@ class SubmissionForm(StyledModelForm):
         uploaded_file = self.cleaned_data.get("file")
         if not uploaded_file:
             raise ValidationError("Please select a file to upload.")
-        allowed_extensions = {".pdf", ".docx", ".xlsx", ".png", ".jpg", ".jpeg"}
+        allowed_extensions = {
+            ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+            ".txt", ".csv", ".png", ".jpg", ".jpeg",
+        }
         extension = Path(uploaded_file.name).suffix.lower()
         if extension not in allowed_extensions:
             raise ValidationError(
-                "Only PDF, DOCX, XLSX, PNG, or JPG files are supported."
+                "Only PDF, DOC/DOCX, XLS/XLSX, PPT/PPTX, TXT, CSV, PNG, or JPG files are supported."
             )
-        if uploaded_file.size > 5 * 1024 * 1024:
-            raise ValidationError("The file must be 5 MB or smaller.")
+        if uploaded_file.size > 4_000_000:
+            raise ValidationError("The file must be 4 MB or smaller for Vercel upload.")
         return uploaded_file
 
 
 class SubmissionReviewForm(forms.Form):
     status = forms.ChoiceField(
-        choices=(("pending", "Pending"), ("under_review", "Under review"), ("reviewed", "Reviewed")),
+        choices=(
+            ("pending", "Pending"),
+            ("under_review", "Under review"),
+            ("reviewed", "Approved"),
+            ("rejected", "Rejected"),
+        ),
         required=True,
     )
     reviewer_comment = forms.CharField(

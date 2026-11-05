@@ -97,6 +97,10 @@ Set `SECRET_KEY` and a persistent PostgreSQL `DATABASE_URL` for the Django servi
 
 If enabling Firebase, also set `FIREBASE_CREDENTIALS` to the complete service-account JSON string, `FIREBASE_DATABASE_URL`, and `FIREBASE_PROJECT_ID`. Keep `USE_FIRESTORE` and `FIRESTORE_SYNC_ENABLED` false unless their corresponding Firestore features are intentionally enabled.
 
+Work submission files use a **private Vercel Blob store**. Connect a Blob store to the Vercel project and set the server-side `BLOB_READ_WRITE_TOKEN` environment variable. Keep it secret and do not expose it through a `VITE_` variable. Django authorizes downloads; the Blob URL/path is not exposed as a public link. Uploads are capped at 4 MB to fit the serverless request payload limit.
+
+The monthly evaluation Cron Job runs at 00:00 UTC on the first day of each month and calls `/api/automation/monthly-evaluations`. Set `CRON_SECRET` in the Vercel project environment; Vercel sends it as a bearer token and the endpoint rejects requests without a matching token. Profile photos also use the private Blob store and are limited to 2 MB.
+
 ## Firebase Hosting and Cloud Run deployment
 
 Firebase Hosting serves the public domain and rewrites application requests to the Django service on Cloud Run. The Firebase SDK in the shared template initializes Firebase Analytics; it does not deploy or host Django by itself. The repository is prepared for Firebase project `lexie-13e6b`, Cloud Run service `lexie-django`, and region `asia-southeast1` (Singapore).
