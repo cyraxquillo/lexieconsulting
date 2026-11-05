@@ -105,6 +105,14 @@ class BackendApiTests(APITestCase):
         self.assertEqual(profile.status_code, 200)
         self.assertEqual(profile.data["email"], "admin@lexie.ph")
 
+    def test_vercel_api_prefix_routes_to_auth_api(self):
+        response = self.client.post(
+            "/api/auth/login",
+            urlencode({"username": "admin@lexie.ph", "password": "Admin123!"}),
+            content_type="application/x-www-form-urlencoded",
+        )
+        self.assertEqual(response.status_code, 200)
+
     def test_invalid_login_is_401(self):
         response = self.client.post(
             "/auth/login",

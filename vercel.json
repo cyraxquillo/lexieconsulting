@@ -18,6 +18,12 @@
       }
     },
     {
+      "source": "/login",
+      "destination": {
+        "service": "app"
+      }
+    },
+    {
       "source": "/(.*)",
       "destination": {
         "service": "app"

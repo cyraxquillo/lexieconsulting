@@ -1,5 +1,5 @@
+import json
 import os
-from pathlib import Path
 
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -11,29 +11,26 @@ def get_firebase_app():
     except ValueError:
         pass
 
-    credentials_path_value = os.getenv("FIREBASE_CREDENTIALS_PATH", "").strip()
-    if not credentials_path_value:
-        raise RuntimeError("FIREBASE_CREDENTIALS_PATH must point to a service account JSON file")
-
-    credentials_path = Path(credentials_path_value).expanduser().resolve()
-    repository_root = Path(__file__).resolve().parents[2]
+    credentials_json = os.getenv("FIREBASE_CREDENTIALS", "").strip()
+    if not credentials_json:
+        raise RuntimeError("FIREBASE_CREDENTIALS must contain service-account JSON")
     try:
-        credentials_path.relative_to(repository_root)
-    except ValueError:
-        pass
-    else:
-        raise RuntimeError("Firebase credentials must be stored outside the repository")
+        credentials_info = json.loads(credentials_json)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("FIREBASE_CREDENTIALS must contain valid JSON") from error
+    if not isinstance(credentials_info, dict):
+        raise RuntimeError("FIREBASE_CREDENTIALS must contain a JSON object")
 
-    if not credentials_path.is_file():
-        raise FileNotFoundError(
-            f"Firebase credentials file does not exist: {credentials_path}"
-        )
-
-    certificate = credentials.Certificate(str(credentials_path))
+    certificate = credentials.Certificate(credentials_info)
     project_id = os.getenv("FIREBASE_PROJECT_ID", "").strip()
-    options = {"projectId": project_id} if project_id else None
+    database_url = os.getenv("FIREBASE_DATABASE_URL", "").strip()
+    options = {}
+    if project_id:
+        options["projectId"] = project_id
+    if database_url:
+        options["databaseURL"] = database_url
     try:
-        return firebase_admin.initialize_app(certificate, options)
+        return firebase_admin.initialize_app(certificate, options or None)
     except ValueError:
         return firebase_admin.get_app()
 

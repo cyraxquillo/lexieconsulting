@@ -85,9 +85,17 @@ Existing `staff` role values continue to work as employee accounts for backwards
 
 ## Database configuration
 
-SQLite is the default. PostgreSQL and MySQL can be configured through `DATABASE_URL` in `backend\.env`; the matching database driver is included in `requirements.txt`. Back up the selected database before running migrations or changing database settings.
+SQLite is the local default, and PostgreSQL can be configured through `DATABASE_URL` in `backend\.env`. The settings use `dj-database-url`; PostgreSQL deployments use `psycopg2-binary`. Vercel's filesystem is ephemeral, so use a managed PostgreSQL database there rather than SQLite. Back up the selected database before running migrations or changing database settings.
+
+The application uses SQL as its primary database. Optional Firebase integration uses Firestore (not Firebase Realtime Database) for Firestore reads or SQL-to-Firestore synchronization.
 
 The Django admin site is available at <http://127.0.0.1:8000/admin/>.
+
+## Vercel environment configuration
+
+Set `SECRET_KEY` and a persistent PostgreSQL `DATABASE_URL` for the Django service. The settings automatically allow `.vercel.app` hosts and trust the Vercel deployment URL; set `CSRF_TRUSTED_ORIGINS` explicitly if using a custom domain. The production frontend uses the same-origin `/api` route by default; `VITE_API_URL` is only needed when the API is hosted elsewhere.
+
+If enabling Firebase, also set `FIREBASE_CREDENTIALS` to the complete service-account JSON string, `FIREBASE_DATABASE_URL`, and `FIREBASE_PROJECT_ID`. Keep `USE_FIRESTORE` and `FIRESTORE_SYNC_ENABLED` false unless their corresponding Firestore features are intentionally enabled.
 
 ## Firebase Hosting and Cloud Run deployment
 

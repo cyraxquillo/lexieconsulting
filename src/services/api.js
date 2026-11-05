@@ -3,7 +3,7 @@ import axios from 'axios'
 export const AUTH_TOKEN_KEY = 'lexie_access_token'
 
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000',
+  baseURL: import.meta.env.VITE_API_URL || (import.meta.env.PROD ? '/api' : 'http://127.0.0.1:8000'),
   headers: { 'Content-Type': 'application/json' },
 })
 

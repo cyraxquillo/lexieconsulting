@@ -2,8 +2,8 @@ import os
 import logging
 import sqlite3
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
 
+import dj_database_url
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -32,10 +32,12 @@ ALLOWED_HOSTS = [
     host.strip()
     for host in os.getenv(
         "ALLOWED_HOSTS",
-        "127.0.0.1,localhost",
+        "127.0.0.1,localhost,.vercel.app",
     ).split(",")
     if host.strip()
 ]
+if ".vercel.app" not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(".vercel.app")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -85,19 +87,16 @@ ASGI_APPLICATION = "config.asgi.application"
 
 
 def database_config():
-    url = os.getenv("DATABASE_URL", "sqlite:///./django.sqlite3")
-    parsed = urlparse(url)
-    if parsed.scheme in {"sqlite", "sqlite3"}:
-        path = unquote(parsed.path)
-        if path.startswith("/./"):
-            path = path[1:]
-        if path in {"", "/:memory:"}:
-            name = ":memory:"
-        else:
-            name = Path(path.lstrip("/")) if not Path(path).is_absolute() else Path(path)
-            name = str((BASE_DIR / name).resolve()) if not Path(name).is_absolute() else str(name)
-
-        sqlite_options = {"timeout": 30}
+    database = dj_database_url.config(
+        default=os.getenv("DATABASE_URL", "sqlite:///./django.sqlite3"),
+        conn_max_age=60,
+    )
+    if database["ENGINE"] == "django.db.backends.sqlite3":
+        name = database["NAME"]
+        if name != ":memory:" and not Path(name).is_absolute():
+            name = str((BASE_DIR / name).resolve())
+            database["NAME"] = name
+        database.setdefault("OPTIONS", {})["timeout"] = 30
         if name != ":memory:":
             try:
                 with sqlite3.connect(name, timeout=30) as connection:
@@ -110,23 +109,7 @@ def database_config():
                     name,
                     error,
                 )
-        return {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": name,
-            "OPTIONS": sqlite_options,
-        }
-    if parsed.scheme in {"postgres", "postgresql", "postgresql+psycopg"}:
-        query = parse_qs(parsed.query)
-        return {
-            "ENGINE": "django.db.backends.postgresql",
-            "NAME": unquote(parsed.path.lstrip("/")),
-            "USER": unquote(parsed.username or ""),
-            "PASSWORD": unquote(parsed.password or ""),
-            "HOST": parsed.hostname or unquote(query.get("host", [""])[0]),
-            "PORT": parsed.port or query.get("port", [""])[0],
-            "CONN_MAX_AGE": 60,
-        }
-    raise ValueError("DATABASE_URL must use sqlite or postgresql")
+    return database
 
 
 DATABASES = {"default": database_config()}
@@ -183,6 +166,12 @@ CSRF_TRUSTED_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
+for vercel_url_name in ("VERCEL_URL", "VERCEL_PROJECT_PRODUCTION_URL"):
+    vercel_url = os.getenv(vercel_url_name, "").strip().rstrip("/")
+    if vercel_url:
+        origin = vercel_url if "://" in vercel_url else f"https://{vercel_url}"
+        if origin not in CSRF_TRUSTED_ORIGINS:
+            CSRF_TRUSTED_ORIGINS.append(origin)
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 LOGGING = {

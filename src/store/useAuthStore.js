@@ -40,6 +40,11 @@ export const useAuthStore = create((set, get) => ({
       return user
     } catch (error) {
       localStorage.removeItem(AUTH_TOKEN_KEY)
+      console.error('Login request failed:', {
+        status: error.response?.status,
+        detail: error.response?.data?.detail,
+        message: error.message,
+      })
       set({ user: null, token: null, loginError: error.response?.data?.detail || 'Unable to sign in. Please try again.' })
       throw error
     } finally {
