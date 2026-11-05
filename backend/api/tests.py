@@ -6,6 +6,7 @@ from urllib.parse import urlencode
 from unittest.mock import patch
 
 from django.core.cache import cache
+from django.core.management import call_command
 from django.core.exceptions import ValidationError
 from django.test import TestCase, override_settings
 from rest_framework.test import APITestCase
@@ -120,6 +121,11 @@ class BackendApiTests(APITestCase):
             content_type="application/x-www-form-urlencoded",
         )
         self.assertEqual(response.status_code, 401)
+
+    def test_set_user_role_management_command_updates_application_role(self):
+        call_command("set_user_role", self.employee_user.email, User.Role.admin)
+        self.employee_user.refresh_from_db()
+        self.assertEqual(self.employee_user.role, User.Role.admin)
 
     def test_api_login_is_throttled_after_five_failed_attempts(self):
         for _ in range(5):

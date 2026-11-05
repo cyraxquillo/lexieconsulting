@@ -16,6 +16,19 @@ import './settings.css'
 
 const cn = (...classes) => classes.filter(Boolean).join(' ')
 const roleLabels = { admin: 'Admin / IT Manager', management: 'Management', hr_manager: 'Management', team_leader: 'Team Leader', staff: 'Staff / Employee', employee: 'Staff / Employee', client: 'Client portal' }
+const employeeRoleGroups = { management: 'management', hr_manager: 'management', team_leader: 'team_leader', staff: 'staff', employee: 'staff' }
+function employeeRoleGroup(role) {
+  const normalized = String(role || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+  return employeeRoleGroups[normalized] || normalized
+}
+function employeeRoleLabel(role) {
+  const group = employeeRoleGroup(role)
+  if (group === 'management') return 'Management'
+  if (group === 'team_leader') return 'Team Leader'
+  if (group === 'staff') return 'Staff'
+  if (group === 'admin') return roleLabels.admin
+  return role || 'Staff'
+}
 const rolePath = (role, path = 'overview') => `/${role}/${path}`
 const trainedDepartments = ['Recruitment', 'Client Services', 'HR & Admin', 'Finance', 'IT Support']
 
@@ -61,9 +74,11 @@ function presentEmployee(employee, evaluations, predictions) {
   const evaluation = latestBy(evaluations, 'employee_id', employee.id)
   const prediction = latestBy(predictions, 'employee_id', employee.id)
   const score = averageEvaluation(evaluation)
+  const role = employee.role || employee.position
   return {
     ...employee,
-    role: employee.position,
+    role,
+    roleLabel: employeeRoleLabel(role),
     avatar: initials(employee.name),
     score: Math.round(score),
     status: prediction?.predicted_category || categoryForScore(score),
@@ -188,7 +203,7 @@ function Employees() {
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState('name')
-  const [department, setDepartment] = useState('all')
+  const [role, setRole] = useState('all')
   const [modal, setModal] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
@@ -198,11 +213,12 @@ function Employees() {
     return () => clearTimeout(timeout)
   }, [searchInput])
   const resource = useApiResource(async () => {
-    const params = { search: search || undefined, department: department === 'all' ? undefined : department }
+    const params = { search: search || undefined }
     const [employees, evaluations, predictions] = await Promise.all([getEmployees(params), getEvaluations(), getPredictions()])
     return employees.map((employee) => presentEmployee(employee, evaluations, predictions))
-  }, [search, department])
-  const rows = [...(resource.data || [])].sort((a, b) => sort === 'score' ? b.score - a.score : a.name.localeCompare(b.name))
+  }, [search])
+  const filteredRows = (resource.data || []).filter((employee) => role === 'all' || employeeRoleGroup(employee.role) === role)
+  const rows = [...filteredRows].sort((a, b) => sort === 'score' ? b.score - a.score : a.name.localeCompare(b.name))
   const submit = async (payload) => {
     setSaving(true)
     setSaveError('')
@@ -217,12 +233,12 @@ function Employees() {
       setSaving(false)
     }
   }
-  return <><div className="page-heading"><div><p className="eyebrow">PEOPLE DIRECTORY</p><h2>Employees</h2><p className="muted">Track performance health across your organization.</p></div><button className="primary-button" onClick={() => setModal(true)}><Plus size={17} /> Add employee</button></div>{message && <div className="inline-feedback" role="status">{message}</div>}<div className="panel table-panel"><div className="table-toolbar"><div className="search-field"><Search size={17} /><input placeholder="Search employees" value={searchInput} onChange={(event) => setSearchInput(event.target.value)} /></div><select className="secondary-button" value={sort} onChange={(event) => setSort(event.target.value)}><option value="name">Sort: name</option><option value="score">Sort: score</option></select><select className="secondary-button" value={department} onChange={(event) => setDepartment(event.target.value)}><option value="all">All departments</option>{trainedDepartments.map((item) => <option key={item}>{item}</option>)}</select></div><QueryState loading={resource.loading} error={resource.error} onRetry={resource.retry} empty={Boolean(resource.data && rows.length === 0)} emptyMessage="Try another search or department filter."><div className="table-scroll"><table><thead><tr><th>Employee</th><th>Department</th><th>Performance score</th><th>Prediction</th><th>Last evaluation</th><th /></tr></thead><tbody>{rows.map((employee) => <EmployeeRow key={employee.id} employee={employee} />)}</tbody></table></div></QueryState></div>{modal && <Modal title="Add employee" onClose={() => setModal(false)}><EmployeeForm onCancel={() => setModal(false)} onSubmit={submit} loading={saving} error={saveError} /></Modal>}</>
+  return <><div className="page-heading"><div><p className="eyebrow">PEOPLE DIRECTORY</p><h2>Employees</h2><p className="muted">Track performance health across your organization.</p></div><button className="primary-button" onClick={() => setModal(true)}><Plus size={17} /> Add employee</button></div>{message && <div className="inline-feedback" role="status">{message}</div>}<div className="panel table-panel"><div className="table-toolbar"><div className="search-field"><Search size={17} /><input placeholder="Search employees" value={searchInput} onChange={(event) => setSearchInput(event.target.value)} /></div><select className="secondary-button" value={sort} onChange={(event) => setSort(event.target.value)}><option value="name">Sort: name</option><option value="score">Sort: score</option></select><select className="secondary-button" value={role} onChange={(event) => setRole(event.target.value)}><option value="all">All roles</option><option value="management">Management</option><option value="team_leader">Team Leader</option><option value="staff">Staff</option></select></div><QueryState loading={resource.loading} error={resource.error} onRetry={resource.retry} empty={Boolean(resource.data && rows.length === 0)} emptyMessage="Try another search or role filter."><div className="table-scroll"><table><thead><tr><th>Employee</th><th>Role</th><th>Performance score</th><th>Prediction</th><th>Last evaluation</th><th /></tr></thead><tbody>{rows.map((employee) => <EmployeeRow key={employee.id} employee={employee} />)}</tbody></table></div></QueryState></div>{modal && <Modal title="Add employee" onClose={() => setModal(false)}><EmployeeForm onCancel={() => setModal(false)} onSubmit={submit} loading={saving} error={saveError} /></Modal>}</>
 }
 
 function EmployeeRow({ employee }) {
   const navigate = useNavigate()
-  return <tr onClick={() => navigate(`/admin/employees/${employee.id}`)} className="clickable-row"><td><div className="person-cell"><span className="avatar small">{employee.avatar}</span><span><strong>{employee.name}</strong><small>{employee.employee_code} · {employee.role}</small></span></div></td><td>{employee.department}</td><td><div className="score-cell"><strong>{employee.score}</strong><div className="mini-bar"><i style={{ width: `${employee.score}%` }} /></div></div></td><td><StatusBadge status={employee.status} /></td><td>{formatDate(employee.latestEvaluation?.date)}</td><td><button className="icon-button" aria-label={`Open ${employee.name}`} onClick={(event) => { event.stopPropagation(); navigate(`/admin/employees/${employee.id}`) }}><ArrowUpRight size={15} /></button></td></tr>
+  return <tr onClick={() => navigate(`/admin/employees/${employee.id}`)} className="clickable-row"><td><div className="person-cell"><span className="avatar small">{employee.avatar}</span><span><strong>{employee.name}</strong><small>{employee.employee_code} · {employee.roleLabel}</small></span></div></td><td>{employee.roleLabel}</td><td><div className="score-cell"><strong>{employee.score}</strong><div className="mini-bar"><i style={{ width: `${employee.score}%` }} /></div></div></td><td><StatusBadge status={employee.status} /></td><td>{formatDate(employee.latestEvaluation?.date)}</td><td><button className="icon-button" aria-label={`Open ${employee.name}`} onClick={(event) => { event.stopPropagation(); navigate(`/admin/employees/${employee.id}`) }}><ArrowUpRight size={15} /></button></td></tr>
 }
 
 function EmployeeForm({ onCancel, onSubmit, loading = false, error = '', initial = {} }) {
