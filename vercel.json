@@ -3,22 +3,11 @@
   "services": {
     "app": {
       "root": ".",
-      "framework": "vite",
-      "bindings": [
-        { "type": "service", "service": "backend", "format": "url", "env": "BACKEND_URL" }
-      ]
+      "framework": "vite"
     },
     "backend": {
       "root": "backend",
       "framework": "django"
-    },
-    "backend-2": {
-      "root": "backend/backend",
-      "framework": "django"
-    },
-    "old_frontend": {
-      "root": "old_frontend",
-      "framework": "vite"
     }
   },
   "rewrites": [
